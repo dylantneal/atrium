@@ -32,3 +32,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .toasts { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); display: grid; gap: 6px; justify-items: center; }
 .toast { background: var(--panel-solid); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; display: flex; gap: 10px; align-items: center; font-size: 14px; }
 .toast.error { border-color: var(--danger); }
+
+.hud-top a { color: var(--accent-2); text-decoration: none; }
+.hud-top a:hover { text-decoration: underline; }
+.hud-top .icon { padding: 2px 9px; border-radius: 999px; line-height: 1.2; }
+.reticle { position: fixed; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: rgba(255,255,255,0.7); pointer-events: none !important; transition: all .12s; box-shadow: 0 0 0 1px rgba(0,0,0,.4); }
+.reticle.on { width: 18px; height: 18px; margin: -9px 0 0 -9px; background: transparent; border: 2px solid var(--accent); }
+.aim-plate { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; text-align: center; pointer-events: none !important; max-width: min(90vw, 420px); }
+.aim-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aim-detail { color: var(--muted); font-size: 13px; }
+.fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none !important; transition: opacity .25s ease; }
+.fade.on { opacity: 1; }
+.stick-base, .stick-knob { position: fixed; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none !important; }
+.stick-base { width: 140px; height: 140px; border: 2px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.05); }
+.stick-knob { width: 56px; height: 56px; background: rgba(255,255,255,0.3); border: 2px solid rgba(255,255,255,0.5); }

@@ -53,14 +53,23 @@ export interface Door {
   portal: boolean;
 }
 
+/** Landmarks are placed in normalized room coordinates (-1..1) so they survive footprint changes. */
+export interface Landmark {
+  kind: number;
+  fx: number;
+  fz: number;
+}
+
 export interface StyleParams {
   palette: number;
+  /** East-west extent in metres. */
   width: number;
+  /** North-south extent in metres. */
   depth: number;
   height: number;
   floor: number;
   trim: number;
-  landmarks: number[];
+  landmarks: Landmark[];
 }
 
 export interface RoomContext {

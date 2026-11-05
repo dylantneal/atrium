@@ -1,6 +1,53 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { ActionBus, Toast } from '../../core/actions';
+import { ui, type UiState } from '../../core/uiState';
 import type { World } from '../../world/scene';
+
+export function useUi(): UiState {
+  const [s, setS] = useState(ui.get());
+  useEffect(() => ui.subscribe((n) => setS(n)), []);
+  return s;
+}
+
+export function Crumbs({ onGo, onUp }: { onGo: (id: string) => void; onUp: () => void }) {
+  const { crumbs } = useUi();
+  if (crumbs.length === 0) return null;
+  return (
+    <nav class="hud-top" aria-label="Location">
+      {crumbs.length > 1 && (
+        <button class="icon" aria-label="Go up one level" onClick={onUp}>
+          ↑
+        </button>
+      )}
+      {crumbs.map((c, i) => (
+        <span key={c.id} class="crumb">
+          {i > 0 && ' / '}
+          {i === crumbs.length - 1 ? <b>{c.name}</b> : <a href="#" onClick={(e) => (e.preventDefault(), onGo(c.id))}>{c.name}</a>}
+        </span>
+      ))}
+    </nav>
+  );
+}
+
+export function Reticle() {
+  const { aim } = useUi();
+  return (
+    <>
+      <div class={`reticle ${aim ? 'on' : ''}`} aria-hidden="true" />
+      {aim && (
+        <div class="aim-plate" role="status">
+          <div class="aim-name">{aim.name}</div>
+          <div class="aim-detail">{aim.detail}</div>
+        </div>
+      )}
+    </>
+  );
+}
+
+export function Fade() {
+  const { fade } = useUi();
+  return <div class={`fade ${fade ? 'on' : ''}`} aria-hidden="true" />;
+}
 
 export function Enter({ onEnter }: { onEnter: () => void }) {
   return (

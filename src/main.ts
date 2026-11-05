@@ -6,6 +6,7 @@ import { mountUi } from './ui/hud/mount';
 import { DemoVFS } from './vfs/demo';
 import { World } from './world/scene';
 import { Session } from './world/session';
+import { FocusController } from './ui/focus/FocusController';
 
 async function boot() {
   const params = new URLSearchParams(location.search);
@@ -16,8 +17,10 @@ async function boot() {
   const bus = new ActionBus();
   const vfs = await DemoVFS.open({ seed: () => buildDemoSeed(1) });
   let session: Session | null = null;
-  const handles = mountUi(uiRoot, world, bus, () => session);
+  let focus: FocusController | null = null;
+  const handles = mountUi(uiRoot, world, bus, () => session, () => focus);
   session = new Session(world, vfs, bus, uiRoot);
+  focus = new FocusController(session, vfs, bus);
   world.start();
   await session.start();
 
@@ -30,7 +33,7 @@ async function boot() {
   });
 
   // Debug/test handle, used by Playwright.
-  (window as unknown as { atrium: unknown }).atrium = { world, bus, vfs, session, ui };
+  (window as unknown as { atrium: unknown }).atrium = { world, bus, vfs, session, ui, focus };
 }
 
 void boot();

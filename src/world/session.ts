@@ -1,4 +1,4 @@
-import type * as THREE from 'three';
+import * as THREE from 'three';
 import type { ActionBus } from '../core/actions';
 import { ui } from '../core/uiState';
 import { getRoom, getSetting, putRoom, setSetting } from '../data/idb';
@@ -8,6 +8,7 @@ import { PlayerController } from './controller';
 import { generateRoom, reconcileRoom } from './generator/rooms';
 import { Input, type TapEvent } from './input';
 import { infoOf, type ItemInfo } from './itemTiles';
+import type { Change } from '../vfs/vfs';
 import { RoomView, type DoorInfo } from './roomView';
 import type { World } from './scene';
 import { ThumbService } from './thumbs';
@@ -41,6 +42,8 @@ export class Session {
   private navigating = false;
   private aimTimer = 0;
   paused = false;
+  private fly: { fromPos: THREE.Vector3; fromQuat: THREE.Quaternion; toPos: THREE.Vector3; toQuat: THREE.Quaternion; t: number; dur: number; done: () => void } | null = null;
+  private reloadTimer = 0;
 
   constructor(
     readonly world: World,
@@ -56,6 +59,69 @@ export class Session {
     this.input.onTap = (e) => this.tap(e);
     this.input.onKey = (k) => this.key(k);
     world.onFrame((dt) => this.frame(dt));
+    vfs.watch((changes) => this.onChanges(changes));
+  }
+
+  /** Smoothly moves the camera to a pose; resolves when it arrives. The player state is untouched. */
+  flyTo(pos: THREE.Vector3, quat: THREE.Quaternion, ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      if (ms <= 0) {
+        this.world.camera.position.copy(pos);
+        this.world.camera.quaternion.copy(quat);
+        resolve();
+        return;
+      }
+      this.fly = { fromPos: this.world.camera.position.clone(), fromQuat: this.world.camera.quaternion.clone(), toPos: pos.clone(), toQuat: quat.clone(), t: 0, dur: ms / 1000, done: resolve };
+    });
+  }
+
+  /** Camera pose that frames an item's picture so it fills most of the screen. */
+  framePoseFor(id: Id): { pos: THREE.Vector3; quat: THREE.Quaternion } | null {
+    const p = this.view?.itemPose(id);
+    if (!p) return null;
+    const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(p.quat);
+    const cam = this.world.camera;
+    const tanHalf = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
+    const dH = p.scale.y / (0.62 * 2 * tanHalf);
+    const dW = p.scale.x / (0.8 * 2 * tanHalf * cam.aspect);
+    const d = Math.max(0.5, dH, dW);
+    return { pos: p.pos.clone().addScaledVector(normal, d), quat: p.quat.clone() };
+  }
+
+  /** The player's current camera pose (what the camera returns to after focus mode). */
+  playerPose(): { pos: THREE.Vector3; quat: THREE.Quaternion } {
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(this.player.pitch, this.player.yaw, 0, 'YXZ'));
+    return { pos: new THREE.Vector3(this.player.x, 1.6, this.player.z), quat: q };
+  }
+
+  private onChanges(changes: Change[]) {
+    if (!this.view) return;
+    let rebuild = false;
+    for (const c of changes) {
+      if (c.type === 'modify' && this.items.has(c.id)) {
+        void this.vfs.stat(c.id).then((n) => {
+          const info = infoOf(n);
+          this.nodes.set(n.id, n);
+          this.items.set(n.id, info);
+          this.view?.refreshItem(info);
+        });
+      } else if (c.parent === this.currentId || (c.type === 'move' && c.from === this.currentId) || c.type === 'remove') {
+        rebuild = true;
+      }
+    }
+    if (rebuild) {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = window.setTimeout(() => void this.reload(), 120);
+    }
+  }
+
+  /** Rebuilds the current room in place (after items moved in or out), keeping the player where they stand. */
+  async reload() {
+    if (this.navigating) return;
+    const keep = { x: this.player.x, z: this.player.z, yaw: this.player.yaw, pitch: this.player.pitch };
+    await this.enter(this.currentId, null, true, true);
+    this.player.place(keep.x, keep.z, keep.yaw);
+    this.player.pitch = keep.pitch;
   }
 
   async start() {
@@ -73,6 +139,18 @@ export class Session {
   }
 
   private frame(dt: number) {
+    if (this.fly) {
+      const f = this.fly;
+      f.t = Math.min(1, f.t + dt / f.dur);
+      const e = f.t < 0.5 ? 2 * f.t * f.t : 1 - Math.pow(-2 * f.t + 2, 2) / 2;
+      this.world.camera.position.lerpVectors(f.fromPos, f.toPos, e);
+      this.world.camera.quaternion.slerpQuaternions(f.fromQuat, f.toQuat, e);
+      if (f.t >= 1) {
+        this.fly = null;
+        f.done();
+      }
+      return;
+    }
     if (this.paused) return;
     this.player.update(dt, this.input, this.view);
     if (this.player.pendingDoor && !this.navigating) {
@@ -126,14 +204,14 @@ export class Session {
   }
 
   /** Loads a folder as the current room. Crossfades through black unless `instant`. */
-  async enter(folderId: Id, from: Id | null, instant: boolean) {
+  async enter(folderId: Id, from: Id | null, instant: boolean, keepContext = false) {
     this.navigating = true;
     try {
       if (!instant) {
         ui.set({ fade: true });
         await sleep(FADE_MS);
       }
-      await this.saveContext();
+      if (!keepContext) await this.saveContext();
       this.thumbs.clearQueue();
       const children = await this.vfs.list(folderId);
       const folder = await this.vfs.stat(folderId);

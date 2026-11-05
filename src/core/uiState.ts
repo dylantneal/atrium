@@ -20,6 +20,7 @@ export interface UiState {
   aim: Aim | null;
   roomTitle: string;
   listView: boolean;
+  focus: { id: Id } | null;
 }
 
-export const ui = createStore<UiState>({ entered: false, fade: false, crumbs: [], aim: null, roomTitle: '', listView: false });
+export const ui = createStore<UiState>({ entered: false, fade: false, crumbs: [], aim: null, roomTitle: '', listView: false, focus: null });

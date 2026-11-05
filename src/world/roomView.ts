@@ -69,6 +69,7 @@ export class RoomView {
   private circles: { x: number; z: number; r: number }[] = [];
   private alive = true;
   private loading: Promise<void>[] = [];
+  private tileOf = new Map<Id, number>();
   private disposables: { dispose(): void }[] = [];
   private activity = 0.5;
 
@@ -387,6 +388,7 @@ export class RoomView {
       this.pics.setMatrixAt(i, m);
       this.picInstances.push({ itemId: p.itemId, side: p.side, slot: p.slot, matrix: m });
       const tile = this.atlas.allocate()!;
+      this.tileOf.set(p.itemId, tile);
       const uv = this.atlas.uvRect(tile);
       uvAttr.setXYZW(i, uv[0], uv[1], uv[2], uv[3]);
       const item = this.deps.items.get(p.itemId)!;
@@ -611,6 +613,19 @@ export class RoomView {
   /** Resolves when every thumbnail and preview in the room has been painted (tests wait on this). */
   whenSettled(): Promise<void> {
     return Promise.all(this.loading).then(() => undefined);
+  }
+
+  /** Items in wall order, for previous/next stepping. */
+  itemOrder(): Id[] {
+    return this.picInstances.map((p) => p.itemId);
+  }
+
+  /** Repaint one item's tile after its name or content changed. */
+  refreshItem(item: ItemInfo) {
+    const tile = this.tileOf.get(item.id);
+    if (tile === undefined) return;
+    this.deps.items.set(item.id, item);
+    this.loading.push(fillTile(this.atlas, tile, item, this.deps.vfs, this.deps.thumbs, () => this.alive));
   }
 
   get itemCount() {

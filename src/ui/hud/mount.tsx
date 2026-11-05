@@ -7,6 +7,7 @@ import { FocusOverlay } from '../focus/FocusOverlay';
 import type { FocusController } from '../focus/FocusController';
 import { ListView } from '../list-view/ListView';
 import { ui } from '../../core/uiState';
+import { Ashes, Hotbar } from './Hotbar';
 import { Crumbs, Enter, Fade, PerfOverlay, Reticle, Toasts } from './App';
 
 export interface UiHandles {
@@ -67,6 +68,8 @@ function FocusHost({ focus }: { focus: () => FocusController | null }) {
   if (!ctl) return null;
   return (
     <>
+      <Hotbar session={ctl.session} />
+      <Ashes session={ctl.session} />
       <FocusOverlay ctl={ctl} />
       <ListView ctl={ctl} />
     </>

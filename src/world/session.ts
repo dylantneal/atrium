@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import type { ActionBus } from '../core/actions';
-import { ui } from '../core/uiState';
+import { ui, type Aim } from '../core/uiState';
 import { getRoom, getSetting, putRoom, setSetting } from '../data/idb';
 import type { Door, Id, Node, Room } from '../data/schema';
 import type { VFS } from '../vfs/vfs';
+import { dropIntoCmd, placeCmd, trashCmd, type HandCtx } from '../core/handCommands';
+import { Inventory } from '../core/inventory';
 import { PlayerController } from './controller';
 import { generateRoom, reconcileRoom } from './generator/rooms';
 import { Input, type TapEvent } from './input';
@@ -42,6 +44,9 @@ export class Session {
   private navigating = false;
   private aimTimer = 0;
   paused = false;
+  readonly inventory = new Inventory();
+  private holdReload = 0;
+  private pendingReload = false;
   private fly: { fromPos: THREE.Vector3; fromQuat: THREE.Quaternion; toPos: THREE.Vector3; toQuat: THREE.Quaternion; t: number; dur: number; done: () => void } | null = null;
   private reloadTimer = 0;
 
@@ -57,9 +62,40 @@ export class Session {
     this.input = new Input(world.canvas, uiRoot);
     this.input.onLook = (dx, dy) => this.player.look(dx, dy);
     this.input.onTap = (e) => this.tap(e);
-    this.input.onKey = (k) => this.key(k);
+    this.input.onKey = (k, e) => this.key(k, e);
+    this.input.onPrimary = (x, y, shift) => void this.primary(x, y, shift);
     world.onFrame((dt) => this.frame(dt));
     vfs.watch((changes) => this.onChanges(changes));
+    this.inventory.store.subscribe(() => this.syncHeld());
+    addEventListener('pagehide', () => void this.inventory.flush());
+    this.handCtx = { vfs, inventory: this.inventory, batch: (fn) => this.batch(fn) };
+  }
+
+  /** Hand commands run several changes as one: no rebuild until the whole batch is done. */
+  handCtx!: HandCtx;
+
+  async batch<T>(fn: () => Promise<T>): Promise<T> {
+    this.holdReload++;
+    try {
+      return await fn();
+    } finally {
+      this.holdReload--;
+      if (this.holdReload === 0) {
+        clearTimeout(this.reloadTimer);
+        this.pendingReload = false;
+        await this.reload();
+      }
+    }
+  }
+
+  private syncHeld() {
+    if (!this.view) return;
+    const held = this.inventory.heldIds;
+    for (const id of held) {
+      if (!this.heldNames.has(id) && !this.items.has(id)) void this.vfs.stat(id).then((n) => this.heldNames.set(id, n.name)).catch(() => {});
+    }
+    this.view.setHeld(held);
+    this.view.setCarrying(this.inventory.selectedId !== null, held);
   }
 
   /** Smoothly moves the camera to a pose; resolves when it arrives. The player state is untouched. */
@@ -110,9 +146,13 @@ export class Session {
       }
     }
     if (rebuild) {
-      clearTimeout(this.reloadTimer);
-      this.reloadTimer = window.setTimeout(() => void this.reload(), 120);
+      if (this.holdReload > 0) this.pendingReload = true;
+      else {
+        clearTimeout(this.reloadTimer);
+        this.reloadTimer = window.setTimeout(() => void this.reload(), 120);
+      }
     }
+    for (const c of changes) if (c.type === 'remove') this.inventory.remove(c.id);
   }
 
   /** Rebuilds the current room in place (after items moved in or out), keeping the player where they stand. */
@@ -125,6 +165,7 @@ export class Session {
   }
 
   async start() {
+    await this.inventory.load((id) => this.vfs.stat(id).then(() => true, () => false));
     const last = await getSetting<Id>('lastRoom');
     let target = this.vfs.rootId;
     if (last) {
@@ -171,13 +212,64 @@ export class Session {
     ui.set({ aim: hit ? this.describe(hit) : null });
   }
 
-  private describe(hit: NonNullable<ReturnType<RoomView['pick']>>) {
+  private heldName(): string | null {
+    const id = this.inventory.selectedId;
+    if (!id) return null;
+    return this.items.get(id)?.name ?? this.heldNames.get(id) ?? 'item';
+  }
+  /** Names of carried items that are not in this room (learned when picked up). */
+  private heldNames = new Map<Id, string>();
+
+  private describe(hit: NonNullable<ReturnType<RoomView['pick']>>): Aim {
+    const holding = this.heldName();
     if (hit.type === 'door') {
       const info = this.doorInfo(hit.door);
-      return { kind: 'door' as const, id: hit.door.to, name: info.isParent ? `Up to ${info.name}` : info.name, detail: info.isParent ? 'Walk through or tap' : `${info.count ?? 0} items` };
+      return {
+        kind: 'door',
+        id: hit.door.to,
+        name: info.isParent ? `Up to ${info.name}` : info.name,
+        detail: info.isParent ? 'Tap or walk through' : `${info.count ?? 0} items`,
+        hint: holding ? `E: drop "${holding}" into this room` : '',
+      };
+    }
+    if (hit.type === 'slot') {
+      return { kind: 'slot', id: `${hit.side}:${hit.slot}`, name: 'Empty spot', detail: holding ? `Place "${holding}" here` : '', hint: holding ? (this.inventory.store.get().copy ? 'E: place a copy' : 'E: place here') : '' };
     }
     const it = this.items.get(hit.itemId);
-    return { kind: 'item' as const, id: hit.itemId, name: it?.name ?? '?', detail: it ? `${it.kind} · ${bytes(it.size)} · ${ago(it.mtime)}` : '' };
+    return { kind: 'item', id: hit.itemId, name: it?.name ?? '?', detail: it ? `${it.kind} · ${bytes(it.size)} · ${ago(it.mtime)}` : '', hint: 'Click: open · E or long-press: pick up' };
+  }
+
+  /** The contextual hand action: pick up, place, or drop through a door, depending on what is aimed at. */
+  async primary(ndcX: number, ndcY: number, shift = false) {
+    if (this.paused || !this.view || this.navigating) return;
+    const hit = this.view.pick(this.world.camera, ndcX, ndcY, 6);
+    if (!hit) return;
+    const sel = this.inventory.selectedId;
+    if (hit.type === 'item') {
+      const it = this.items.get(hit.itemId);
+      if (!this.inventory.pickUp(hit.itemId)) return this.bus.toast('Your hands are full. Put something down first.', 'error');
+      if (it) this.heldNames.set(hit.itemId, it.name);
+      this.bus.toast(`Picked up ${it?.name ?? 'item'}`);
+    } else if (hit.type === 'slot') {
+      if (!sel) return this.bus.toast('Pick something up first', 'error');
+      const copy = shift || this.inventory.store.get().copy;
+      await this.bus.dispatch(placeCmd(this.handCtx, sel, this.currentId, { side: hit.side, slot: hit.slot }, copy));
+    } else if (hit.type === 'door') {
+      if (!sel) return;
+      const info = this.doorInfo(hit.door);
+      await this.bus.dispatch(dropIntoCmd(this.handCtx, sel, hit.door.to, info.name));
+    }
+  }
+
+  /** Cancel carrying the selected item (it never left its place). */
+  putBack() {
+    const id = this.inventory.selectedId;
+    if (id) this.inventory.remove(id);
+  }
+
+  async trashSelected() {
+    const id = this.inventory.selectedId;
+    if (id) await this.bus.dispatch(trashCmd(this.handCtx, id));
   }
 
   private childCounts = new Map<Id, number>();
@@ -244,6 +336,7 @@ export class Session {
       this.currentId = folderId;
       this.view = new RoomView({ room, items: this.items, doorInfo: this.doorInfo, renderer: this.world.renderer, vfs: this.vfs, thumbs: this.thumbs, overflowCount: overflow });
       this.world.root.add(this.view.group);
+      this.syncHeld();
       this.world.sun.intensity = 0;
       this.world.ambient.intensity = 0;
       this.world.scene.background = null;
@@ -283,20 +376,24 @@ export class Session {
     const hit = this.view.pick(this.world.camera, e.ndcX, e.ndcY);
     if (!hit) return;
     if (hit.type === 'door') void this.go(hit.door);
+    else if (hit.type === 'slot') void this.primary(e.ndcX, e.ndcY);
     else this.onItemActivate?.(hit.itemId);
   }
 
   /** Set by the focus-mode layer (M2). */
   onItemActivate: ((id: Id) => void) | null = null;
 
-  private key(k: string) {
+  private key(k: string, e?: KeyboardEvent) {
     if (this.paused) return;
     if (k === 'backspace' || k === 'b') void this.goUp();
-    else if (k === 'e' || k === 'enter') {
+    else if (k === 'e') void this.primary(0, 0, e?.shiftKey ?? false);
+    else if (k === 'enter' || k === 'f') {
       const hit = this.view?.pick(this.world.camera, 0, 0);
       if (hit?.type === 'door') void this.go(hit.door);
       else if (hit?.type === 'item') this.onItemActivate?.(hit.itemId);
-    }
+    } else if (k === 'q') this.putBack();
+    else if (k === 'delete') void this.trashSelected();
+    else if (/^[1-8]$/.test(k)) this.inventory.select(Number(k) - 1);
   }
 
   get camera(): THREE.PerspectiveCamera {

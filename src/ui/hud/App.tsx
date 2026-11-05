@@ -38,6 +38,7 @@ export function Reticle() {
         <div class="aim-plate" role="status">
           <div class="aim-name">{aim.name}</div>
           <div class="aim-detail">{aim.detail}</div>
+          {aim.hint && <div class="aim-hint">{aim.hint}</div>}
         </div>
       )}
     </>

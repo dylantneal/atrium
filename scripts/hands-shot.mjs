@@ -1,0 +1,23 @@
+import { chromium } from '@playwright/test';
+const browser = await chromium.launch({ executablePath: process.env.PW_CHROMIUM, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+const page = await browser.newPage({ viewport: { width: Number(process.env.W || 1280), height: Number(process.env.H || 720) } });
+await page.goto('http://localhost:4173/?db=hs-' + Date.now());
+await page.getByRole('button', { name: 'Enter' }).click();
+await page.waitForFunction(() => window.atrium?.session?.view);
+await page.evaluate(async () => {
+  const a = window.atrium, s = a.session;
+  const find = async (p) => { let id = a.vfs.rootId; for (const part of p.split('/')) id = (await a.vfs.list(id)).find((k) => k.name === part).id; return id; };
+  await s.enter(await find('Crow Short Film/Storyboards'), null, true); await s.view.whenSettled();
+  const its = [...s.items.values()];
+  s.inventory.pickUp(its[0].id); s.inventory.pickUp(its[3].id); s.inventory.pickUp(its[5].id);
+  s.inventory.select(1);
+  await s.enter(await find('Crow Short Film/Renders'), null, true); await s.view.whenSettled();
+  const ref = s.view.ghostRef(0); const pos = s.view.slotWorldPos(ref.side, ref.slot);
+  const len = Math.hypot(pos.x, pos.z) || 1;
+  s.player.place(pos.x - (pos.x / len) * 3.2, pos.z - (pos.z / len) * 3.2, 0);
+  s.player.yaw = Math.atan2(-(pos.x - s.player.x), -(pos.z - s.player.z)); s.player.pitch = 0;
+  s.world.renderOnce();
+});
+await page.waitForTimeout(500);
+await page.screenshot({ path: 'test-results/hands.png' });
+await browser.close();

@@ -16,7 +16,10 @@ export interface DoorInfo {
   isParent: boolean;
 }
 
-export type Pick = { type: 'item'; itemId: Id; side: Side; slot: number; distance: number } | { type: 'door'; door: Door; distance: number };
+export type Pick =
+  | { type: 'item'; itemId: Id; side: Side; slot: number; distance: number }
+  | { type: 'door'; door: Door; distance: number }
+  | { type: 'slot'; side: Side; slot: number; distance: number };
 
 export interface RoomViewDeps {
   room: Room;
@@ -70,6 +73,9 @@ export class RoomView {
   private alive = true;
   private loading: Promise<void>[] = [];
   private tileOf = new Map<Id, number>();
+  private ghosts: THREE.InstancedMesh | null = null;
+  private ghostRefs: { side: Side; slot: number }[] = [];
+  private slotGeoms: { side: Side; type: WallType; geom: SlotGeom }[] = [];
   private disposables: { dispose(): void }[] = [];
   private activity = 0.5;
 
@@ -98,6 +104,7 @@ export class RoomView {
     this.buildLandmarks(pal);
     this.buildLights(pal);
     this.buildPictures(wanted);
+    this.buildGhosts();
     this.setActivity(deps.room.activity);
   }
 
@@ -402,6 +409,79 @@ export class RoomView {
     this.disposables.push(geom, this.picMat, this.atlas);
   }
 
+  // ---------------------------------------------------------------- placement ghosts
+
+  private slotPicMatrix(side: Side, type: WallType, g: SlotGeom, lift = 0): THREE.Matrix4 {
+    const { pw, ph } = this.fit(g);
+    const inset = (type === 'gallery' ? 0.056 : type === 'shelf' ? 0.2 : type === 'screen' ? (g.main ? 0.06 : 0.05) : 0.05) + lift;
+    const yPic = type === 'shelf' ? g.y - g.h / 2 + 0.015 + ph / 2 : g.y;
+    const f = slotPose(this.size, side, { ...g, y: yPic }, inset);
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, f.ry, 0));
+    q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), g.tilt));
+    return new THREE.Matrix4().compose(new THREE.Vector3(f.pos.x, f.pos.y, f.pos.z), q, new THREE.Vector3(pw, ph, 1));
+  }
+
+  private buildGhosts() {
+    for (const wall of this.room.walls) {
+      const geoms = slotGeometry(this.size, wall.side, wall.type, this.height, this.room.seed + SIDES.indexOf(wall.side));
+      for (const g of geoms) this.slotGeoms.push({ side: wall.side, type: wall.type, geom: g });
+    }
+    const geo = new THREE.PlaneGeometry(1, 1);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffb25b, transparent: true, opacity: 0.32, depthWrite: false });
+    this.ghosts = new THREE.InstancedMesh(geo, mat, Math.max(1, this.slotGeoms.length));
+    this.ghosts.count = 0;
+    this.ghosts.visible = false;
+    this.ghosts.frustumCulled = false;
+    this.ghosts.renderOrder = 5;
+    this.group.add(this.ghosts);
+    this.disposables.push(geo, mat);
+  }
+
+  /** While carrying, empty spots (and the spot an item came from) glow so you can see where it can go. */
+  setCarrying(on: boolean, held: Set<Id>) {
+    const gh = this.ghosts;
+    if (!gh) return;
+    gh.visible = on;
+    this.ghostRefs = [];
+    if (!on) {
+      gh.count = 0;
+      return;
+    }
+    let n = 0;
+    for (const sg of this.slotGeoms) {
+      const wall = this.room.walls.find((w) => w.side === sg.side)!;
+      const occupant = wall.slots[sg.geom.index]?.itemId ?? null;
+      if (occupant && !held.has(occupant)) continue;
+      gh.setMatrixAt(n++, this.slotPicMatrix(sg.side, sg.type, sg.geom, 0.012));
+      this.ghostRefs.push({ side: sg.side, slot: sg.geom.index });
+    }
+    gh.count = n;
+    gh.instanceMatrix.needsUpdate = true;
+    gh.computeBoundingSphere();
+  }
+
+  /** World position of a wall spot's picture (tests and "take me there" use this). */
+  slotWorldPos(side: Side, slot: number): THREE.Vector3 | null {
+    const sg = this.slotGeoms.find((x) => x.side === side && x.geom.index === slot);
+    return sg ? new THREE.Vector3().setFromMatrixPosition(this.slotPicMatrix(sg.side, sg.type, sg.geom)) : null;
+  }
+
+  /** The i-th glowing free spot while carrying. */
+  ghostRef(i: number) {
+    return this.ghostRefs[i] ?? null;
+  }
+
+  get freeSpotCount() {
+    return this.ghostRefs.length;
+  }
+
+  /** Hide the pictures of items the player is carrying (their frames stay as empty hooks). */
+  setHeld(held: Set<Id>) {
+    const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+    this.picInstances.forEach((inst, i) => this.pics.setMatrixAt(i, held.has(inst.itemId) ? zero : inst.matrix));
+    this.pics.instanceMatrix.needsUpdate = true;
+  }
+
   // ---------------------------------------------------------------- landmarks
 
   private buildLandmarks(pal: (typeof PALETTES)[number]) {
@@ -586,9 +666,14 @@ export class RoomView {
   pick(camera: THREE.Camera, ndcX = 0, ndcY = 0, maxDist = 7): Pick | null {
     this.ray.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
     this.ray.far = maxDist;
-    const hits = this.ray.intersectObjects([this.pics, ...this.doorPanels], false);
+    const targets: THREE.Object3D[] = [this.pics, ...this.doorPanels];
+    if (this.ghosts?.visible) targets.push(this.ghosts);
+    const hits = this.ray.intersectObjects(targets, false);
     for (const h of hits) {
-      if (h.object === this.pics && h.instanceId !== undefined) {
+      if (h.object === this.ghosts && h.instanceId !== undefined) {
+        const ref = this.ghostRefs[h.instanceId];
+        if (ref) return { type: 'slot', side: ref.side, slot: ref.slot, distance: h.distance };
+      } else if (h.object === this.pics && h.instanceId !== undefined) {
         const inst = this.picInstances[h.instanceId];
         if (inst) return { type: 'item', itemId: inst.itemId, side: inst.side, slot: inst.slot, distance: h.distance };
       } else {

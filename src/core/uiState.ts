@@ -2,10 +2,11 @@ import type { Id } from '../data/schema';
 import { createStore } from './store';
 
 export interface Aim {
-  kind: 'item' | 'door';
+  kind: 'item' | 'door' | 'slot';
   id: Id;
   name: string;
   detail: string;
+  hint?: string;
 }
 
 export interface Crumb {
@@ -21,6 +22,7 @@ export interface UiState {
   roomTitle: string;
   listView: boolean;
   focus: { id: Id } | null;
+  ashes: boolean;
 }
 
-export const ui = createStore<UiState>({ entered: false, fade: false, crumbs: [], aim: null, roomTitle: '', listView: false, focus: null });
+export const ui = createStore<UiState>({ entered: false, fade: false, crumbs: [], aim: null, roomTitle: '', listView: false, focus: null, ashes: false });

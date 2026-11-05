@@ -17,6 +17,8 @@ interface Ptr {
   t0: number;
   moved: number;
   touch: boolean;
+  timer?: number;
+  long?: boolean;
 }
 
 const STICK_RADIUS = 70;
@@ -34,6 +36,8 @@ export class Input {
   enabled = true;
   onLook: (dx: number, dy: number) => void = () => {};
   onTap: (e: TapEvent) => void = () => {};
+  /** Right-click or long-press: the contextual hand action (pick up, place, drop). */
+  onPrimary: (ndcX: number, ndcY: number, shift: boolean) => void = () => {};
   onKey: (key: string, e: KeyboardEvent) => void = () => {};
 
   private keys = new Set<string>();
@@ -56,7 +60,10 @@ export class Input {
     el.addEventListener('pointermove', this.move);
     el.addEventListener('pointerup', this.up);
     el.addEventListener('pointercancel', this.up);
-    el.addEventListener('contextmenu', (e) => e.preventDefault());
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (this.enabled) this.onPrimary((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1, e.shiftKey);
+    });
   }
 
   /** Call every frame to fold keys into the move vector. */
@@ -109,8 +116,18 @@ export class Input {
     const touch = e.pointerType === 'touch';
     const hasStick = [...this.ptrs.values()].some((p) => p.mode === 'stick');
     const mode = touch && !hasStick && e.clientX < innerWidth * 0.4 && e.clientY > innerHeight * 0.3 ? 'stick' : 'look';
-    this.ptrs.set(e.pointerId, { mode, sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, t0: performance.now(), moved: 0, touch });
+    const ptr: Ptr = { mode, sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, t0: performance.now(), moved: 0, touch };
+    this.ptrs.set(e.pointerId, ptr);
     if (mode === 'stick') this.showStick(e.clientX, e.clientY, e.clientX, e.clientY);
+    else if (touch) {
+      // long press on touch = the hand action
+      ptr.timer = window.setTimeout(() => {
+        if (this.ptrs.get(e.pointerId) === ptr && ptr.moved < 8) {
+          ptr.long = true;
+          this.onPrimary((ptr.lx / innerWidth) * 2 - 1, -(ptr.ly / innerHeight) * 2 + 1, false);
+        }
+      }, 500);
+    }
   };
 
   private move = (e: PointerEvent) => {
@@ -129,7 +146,9 @@ export class Input {
     const p = this.ptrs.get(e.pointerId);
     if (!p) return;
     this.ptrs.delete(e.pointerId);
+    clearTimeout(p.timer);
     if (p.mode === 'stick') this.hideStick();
+    if (p.long) return;
     const dt = performance.now() - p.t0;
     if (p.moved < 8 && dt < 450 && e.type === 'pointerup') {
       this.onTap({ x: e.clientX, y: e.clientY, ndcX: (e.clientX / innerWidth) * 2 - 1, ndcY: -(e.clientY / innerHeight) * 2 + 1, mouse: !p.touch });

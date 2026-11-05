@@ -27,6 +27,8 @@ export class VfsError extends Error {
  */
 export interface VFS {
   readonly rootId: Id;
+  /** True for the generated sample data backend (enables demo-only helpers). */
+  readonly demo: boolean;
   /** Immediate children of a folder (excluding the trash folder). */
   list(dir: Id): Promise<Node[]>;
   stat(id: Id): Promise<Node>;

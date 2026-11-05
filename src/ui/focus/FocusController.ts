@@ -52,7 +52,8 @@ export class FocusController {
       s.paused = true;
       ui.set({ focus: { id }, aim: null });
       s.world.setPaused(true);
-      void recordOpen(id);
+      void recordOpen(id).then(() => this.session.refreshActivitySoon());
+      this.session.events.emit('focus');
     } finally {
       this.busy = false;
     }

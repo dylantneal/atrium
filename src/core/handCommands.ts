@@ -1,4 +1,4 @@
-import type { Id, Room } from '../data/schema';
+import type { Id, Room, Side } from '../data/schema';
 import { getRoom, putRoom } from '../data/idb';
 import type { VFS } from '../vfs/vfs';
 import { assignSlot, clearItem, findSlot, type SlotRef } from './placement';
@@ -151,6 +151,37 @@ export function restoreCmd(ctx: HandCtx, itemId: Id): Command {
     },
     async undo() {
       await ctx.batch(() => ctx.vfs.trash(itemId));
+    },
+  };
+}
+
+/** Re-hang items on a room's walls in a new order (used by the docent's "sort this wall"). Undo restores the old hooks exactly. */
+export function rearrangeCmd(ctx: HandCtx, roomId: Id, label: string, next: Partial<Record<Side, (Id | null)[]>>): Command {
+  let before: Partial<Record<Side, (Id | null)[]>> = {};
+  const write = async (state: Partial<Record<Side, (Id | null)[]>>) => {
+    const room = await roomOf(roomId);
+    if (!room) throw new Error('This room is not ready yet');
+    const copy = structuredClone(room);
+    for (const w of copy.walls) {
+      const ids = state[w.side];
+      if (!ids) continue;
+      w.slots.forEach((s, i) => (s.itemId = ids[i] ?? null));
+    }
+    await putRoom(copy);
+  };
+  return {
+    label,
+    async run() {
+      await ctx.batch(async () => {
+        const room = await roomOf(roomId);
+        if (!room) throw new Error('This room is not ready yet');
+        before = {};
+        for (const w of room.walls) if (next[w.side]) before[w.side] = w.slots.map((s) => s.itemId);
+        await write(next);
+      });
+    },
+    async undo() {
+      await ctx.batch(() => write(before));
     },
   };
 }

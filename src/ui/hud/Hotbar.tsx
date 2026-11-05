@@ -126,3 +126,21 @@ export function Ashes({ session }: { session: Session }) {
     </aside>
   );
 }
+
+/** Demo-only helper: edits a file in the dimmest room so the light change can be seen in seconds. */
+export function DemoChip({ session }: { session: Session }) {
+  const { entered, focus } = useUi();
+  if (!entered || focus) return null;
+  return (
+    <div class="top-right">
+      <button data-testid="open-docent" onClick={() => ui.set({ docent: !ui.get().docent })}>Docent</button>
+      <button aria-label="Settings" data-testid="open-settings" onClick={() => ui.set({ settings: !ui.get().settings })}>⚙</button>
+      <button data-testid="open-search" aria-label="Open search" onClick={() => ui.set({ launcher: { open: true, query: '' } })}>⌕</button>
+      {session.demo && (
+        <button class="demo-chip" data-testid="make-live" title="Edit a file in the dimmest room behind a door here, and watch that door light up" onClick={() => void session.makeItLive()}>
+          ✦ Make it live
+        </button>
+      )}
+    </div>
+  );
+}

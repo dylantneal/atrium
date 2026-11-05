@@ -1,13 +1,18 @@
 import * as THREE from 'three';
 import type { ActionBus } from '../core/actions';
 import { ui, type Aim } from '../core/uiState';
-import { getRoom, getSetting, putRoom, setSetting } from '../data/idb';
-import type { Door, Id, Node, Room } from '../data/schema';
+import { addAccess, allRooms, deleteRoom, getRoom, getSetting, NINETY_DAYS, putRoom, recentAccess, setSetting } from '../data/idb';
+import { Emitter, type GameEvent } from '../core/events';
+import { computeActivity, DAY, type FolderActivity } from '../core/rules/activity';
+import { TIERS } from './quality';
+import type { Door, Id, Node, Room, Side } from '../data/schema';
 import type { VFS } from '../vfs/vfs';
 import { dropIntoCmd, placeCmd, trashCmd, type HandCtx } from '../core/handCommands';
 import { Inventory } from '../core/inventory';
 import { PlayerController } from './controller';
-import { generateRoom, reconcileRoom } from './generator/rooms';
+import { allBays, bayIndexOfDoor, doorAt, generateRoom, reconcileRoom, WORKSHOP_PALETTE } from './generator/rooms';
+import { hash32, uuid } from '../util/hash';
+import { SearchService } from './searchService';
 import { Input, type TapEvent } from './input';
 import { infoOf, type ItemInfo } from './itemTiles';
 import type { Change } from '../vfs/vfs';
@@ -45,6 +50,15 @@ export class Session {
   private aimTimer = 0;
   paused = false;
   readonly inventory = new Inventory();
+  readonly events = new Emitter<GameEvent>();
+  readonly search: SearchService;
+  private lamps = new Map<Id, number>();
+  /** Per-folder activity, refreshed on entry and whenever files change. */
+  activity = new Map<Id, FolderActivity>();
+  private lastTouch = new Map<Id, number>();
+  private activityTimer = 0;
+  /** True when running on the generated demo data (shows the "Make it live" helper). */
+  demo = false;
   private holdReload = 0;
   private pendingReload = false;
   private fly: { fromPos: THREE.Vector3; fromQuat: THREE.Quaternion; toPos: THREE.Vector3; toQuat: THREE.Quaternion; t: number; dur: number; done: () => void } | null = null;
@@ -58,6 +72,7 @@ export class Session {
   ) {
     this.currentId = vfs.rootId;
     this.thumbs = new ThumbService(vfs);
+    this.search = new SearchService(vfs);
     this.player = new PlayerController(world.camera);
     this.input = new Input(world.canvas, uiRoot);
     this.input.onLook = (dx, dy) => this.player.look(dx, dy);
@@ -95,7 +110,7 @@ export class Session {
       if (!this.heldNames.has(id) && !this.items.has(id)) void this.vfs.stat(id).then((n) => this.heldNames.set(id, n.name)).catch(() => {});
     }
     this.view.setHeld(held);
-    this.view.setCarrying(this.inventory.selectedId !== null, held);
+    this.view.setCarrying(this.view.room.kind === 'folder' && this.inventory.selectedId !== null, held);
   }
 
   /** Smoothly moves the camera to a pose; resolves when it arrives. The player state is untouched. */
@@ -130,7 +145,73 @@ export class Session {
     return { pos: new THREE.Vector3(this.player.x, 1.6, this.player.z), quat: q };
   }
 
+  /** Recompute folder activity from the file tree and the access log, then ease the current room and its doors to match. */
+  async refreshActivity() {
+    const now = Date.now();
+    const [nodes, events] = await Promise.all([this.vfs.all(), recentAccess(now - NINETY_DAYS)]);
+    this.activity = computeActivity(nodes, events, now);
+    this.lastTouch.clear();
+    for (const e of events) this.lastTouch.set(e.nodeId, Math.max(this.lastTouch.get(e.nodeId) ?? 0, e.ts));
+    this.applyActivity();
+  }
+
+  refreshActivitySoon() {
+    clearTimeout(this.activityTimer);
+    this.activityTimer = window.setTimeout(() => void this.refreshActivity(), 250);
+  }
+
+  private applyActivity() {
+    const v = this.view;
+    if (!v || v.room.kind !== 'folder') return;
+    const a = this.activity.get(this.currentId)?.activity;
+    if (a !== undefined) v.setActivityTarget(a);
+    for (const d of v.room.doors) v.setDoorState(d.id, this.doorInfo(d));
+  }
+
+  private idleDaysOf(id: Id): number {
+    const it = this.items.get(id);
+    const touched = Math.max(it?.mtime ?? 0, this.lastTouch.get(id) ?? 0);
+    return Math.max(0, Math.floor((Date.now() - touched) / DAY));
+  }
+
+  /** Demo helper: edit a file inside the dimmest room behind a door here and watch that door come alive. */
+  async makeItLive(): Promise<string | null> {
+    const v = this.view;
+    if (!v) return null;
+    const parent = this.nodes.get(this.currentId)?.parent;
+    const doors = v.room.doors.filter((d) => d.to !== parent && !d.portal);
+    if (doors.length === 0) {
+      this.bus.toast('Go to a room with doors (Home has six) and try again');
+      return null;
+    }
+    doors.sort((a, b) => (this.activity.get(a.to)?.activity ?? 1) - (this.activity.get(b.to)?.activity ?? 1));
+    const target = doors[0];
+    const all = await this.vfs.all();
+    const byParent = new Map<Id, typeof all>();
+    for (const n of all) byParent.set(n.parent ?? '', [...(byParent.get(n.parent ?? '') ?? []), n]);
+    const stack = [target.to];
+    let file: (typeof all)[number] | undefined;
+    while (stack.length && !file) {
+      const id = stack.pop()!;
+      for (const n of (byParent.get(id) ?? []).sort((x, y) => x.name.localeCompare(y.name))) {
+        if (n.kind === 'folder') stack.push(n.id);
+        else if (!file && (n.kind === 'markdown' || n.kind === 'text')) file = n;
+      }
+    }
+    if (!file) {
+      this.bus.toast('Nothing editable in that room');
+      return null;
+    }
+    const text = await (await this.vfs.read(file.id)).text();
+    await this.vfs.write(file.id, `${text.trimEnd()}\n\nEdited just now.\n`);
+    await addAccess({ nodeId: file.id, ts: Date.now(), type: 'edit' });
+    await this.refreshActivity();
+    this.events.emit('live');
+    return target.to;
+  }
+
   private onChanges(changes: Change[]) {
+    this.refreshActivitySoon();
     if (!this.view) return;
     let rebuild = false;
     for (const c of changes) {
@@ -165,6 +246,9 @@ export class Session {
   }
 
   async start() {
+    this.demo = this.vfs.demo;
+    await this.refreshActivity();
+    void this.search.init();
     await this.inventory.load((id) => this.vfs.stat(id).then(() => true, () => false));
     const last = await getSetting<Id>('lastRoom');
     let target = this.vfs.rootId;
@@ -192,6 +276,7 @@ export class Session {
       }
       return;
     }
+    this.view?.tick(dt);
     if (this.paused) return;
     this.player.update(dt, this.input, this.view);
     if (this.player.pendingDoor && !this.navigating) {
@@ -236,7 +321,8 @@ export class Session {
       return { kind: 'slot', id: `${hit.side}:${hit.slot}`, name: 'Empty spot', detail: holding ? `Place "${holding}" here` : '', hint: holding ? (this.inventory.store.get().copy ? 'E: place a copy' : 'E: place here') : '' };
     }
     const it = this.items.get(hit.itemId);
-    return { kind: 'item', id: hit.itemId, name: it?.name ?? '?', detail: it ? `${it.kind} · ${bytes(it.size)} · ${ago(it.mtime)}` : '', hint: 'Click: open · E or long-press: pick up' };
+    const where = this.view && this.view.room.kind !== 'folder' ? this.search.paths.get(hit.itemId) : '';
+    return { kind: 'item', id: hit.itemId, name: it?.name ?? '?', detail: where ? `in ${where || 'Home'}` : it ? `${it.kind} · ${bytes(it.size)} · ${ago(it.mtime)}` : '', hint: 'Click: open · E or long-press: pick up' };
   }
 
   /** The contextual hand action: pick up, place, or drop through a door, depending on what is aimed at. */
@@ -250,15 +336,22 @@ export class Session {
       if (!this.inventory.pickUp(hit.itemId)) return this.bus.toast('Your hands are full. Put something down first.', 'error');
       if (it) this.heldNames.set(hit.itemId, it.name);
       this.bus.toast(`Picked up ${it?.name ?? 'item'}`);
+      this.events.emit('pickup');
     } else if (hit.type === 'slot') {
       if (!sel) return this.bus.toast('Pick something up first', 'error');
       const copy = shift || this.inventory.store.get().copy;
-      await this.bus.dispatch(placeCmd(this.handCtx, sel, this.currentId, { side: hit.side, slot: hit.slot }, copy));
+      if (await this.bus.dispatch(placeCmd(this.handCtx, sel, this.currentId, { side: hit.side, slot: hit.slot }, copy))) this.events.emit('placed');
     } else if (hit.type === 'door') {
       if (!sel) return;
       const info = this.doorInfo(hit.door);
-      await this.bus.dispatch(dropIntoCmd(this.handCtx, sel, hit.door.to, info.name));
+      if (await this.bus.dispatch(dropIntoCmd(this.handCtx, sel, hit.door.to, info.name))) this.events.emit('placed');
     }
+  }
+
+  /** Which wall the crosshair is on (item or empty spot), for "this wall" requests. */
+  aimedSide(): Side | null {
+    const hit = this.view?.pick(this.world.camera, 0, 0, 12);
+    return hit && (hit.type === 'item' || hit.type === 'slot') ? hit.side : null;
   }
 
   /** Cancel carrying the selected item (it never left its place). */
@@ -275,7 +368,8 @@ export class Session {
   private childCounts = new Map<Id, number>();
   private doorInfo = (d: Door): DoorInfo => {
     const n = this.nodes.get(d.to);
-    return { name: n?.name ?? d.label, count: this.childCounts.get(d.to), isParent: d.to === this.nodes.get(this.currentId)?.parent };
+    const fa = this.activity.get(d.to);
+    return { name: n?.name ?? d.label, count: this.childCounts.get(d.to), isParent: d.label === 'Back', activity: fa?.activity, idleDays: fa?.idleDays };
   };
 
   async go(door: Door) {
@@ -291,12 +385,18 @@ export class Session {
   }
 
   async goUp() {
+    const back = this.view?.room.doors.find((d) => d.label === 'Back');
+    if (this.isVirtual(this.currentId) && back) return void (await this.enter(back.to, this.currentId, false));
     const n = this.nodes.get(this.currentId) ?? (await this.vfs.stat(this.currentId));
     if (n.parent) await this.enter(n.parent, this.currentId, false);
   }
 
-  /** Loads a folder as the current room. Crossfades through black unless `instant`. */
-  async enter(folderId: Id, from: Id | null, instant: boolean, keepContext = false) {
+  isVirtual(id: Id) {
+    return id.startsWith('search:') || id.startsWith('view:');
+  }
+
+  /** Loads a room (a folder, a search result, or a saved view). Crossfades through black unless `instant`. */
+  async enter(id: Id, from: Id | null, instant: boolean, keepContext = false) {
     this.navigating = true;
     try {
       if (!instant) {
@@ -305,62 +405,243 @@ export class Session {
       }
       if (!keepContext) await this.saveContext();
       this.thumbs.clearQueue();
-      const children = await this.vfs.list(folderId);
-      const folder = await this.vfs.stat(folderId);
-      this.nodes.clear();
-      this.nodes.set(folder.id, folder);
-      for (const c of children) this.nodes.set(c.id, c);
-      if (folder.parent) this.nodes.set(folder.parent, await this.vfs.stat(folder.parent));
-      this.childCounts.clear();
-      for (const c of children) if (c.kind === 'folder') this.childCounts.set(c.id, (await this.vfs.list(c.id)).length);
-      if (folder.parent) this.childCounts.set(folder.parent, (await this.vfs.list(folder.parent)).length);
-
-      const files = children.filter((c) => c.kind !== 'folder');
-      const folders = children.filter((c) => c.kind === 'folder');
-      let room: Room | undefined = await getRoom(folderId);
-      const layoutItems = files.map((f) => ({ id: f.id, name: f.name, kind: f.kind }));
-      const layoutFolders = folders.map((f) => ({ id: f.id, name: f.name }));
-      let overflow = 0;
-      if (!room) {
-        room = generateRoom({ roomId: folderId, kind: 'folder', items: layoutItems, folders: layoutFolders, parentId: folder.parent, title: folder.name });
-        await putRoom(room);
-      } else {
-        const r = reconcileRoom(room, layoutItems, layoutFolders, folder.parent);
-        overflow = r.overflowItems.length;
-        if (r.changed) await putRoom(r.room);
-        room = r.room;
-      }
-
-      this.items = new Map(files.map((f) => [f.id, infoOf(f)]));
-      this.view?.dispose();
-      this.currentId = folderId;
-      this.view = new RoomView({ room, items: this.items, doorInfo: this.doorInfo, renderer: this.world.renderer, vfs: this.vfs, thumbs: this.thumbs, overflowCount: overflow });
-      this.world.root.add(this.view.group);
-      this.syncHeld();
-      this.world.sun.intensity = 0;
-      this.world.ambient.intensity = 0;
-      this.world.scene.background = null;
-
-      const ctx = room.context;
-      if (instant && ctx) this.player.place(ctx.px, ctx.pz, ctx.yaw);
-      else {
-        const s = this.view.spawn(from);
-        this.player.place(s.x, s.z, s.yaw);
-      }
-      // crumbs
-      const crumbs: { id: Id; name: string }[] = [];
-      let cur: Node | null = folder;
-      while (cur) {
-        crumbs.unshift({ id: cur.id, name: cur.id === this.vfs.rootId ? 'Home' : cur.name });
-        cur = cur.parent ? await this.vfs.stat(cur.parent).catch(() => null) : null;
-      }
-      ui.set({ crumbs, roomTitle: folder.name, aim: null });
-      await setSetting('lastRoom', folderId);
+      if (this.isVirtual(id) && (await getRoom(id))) await this.enterVirtual(id, from, instant);
+      else await this.enterFolder(this.isVirtual(id) ? this.vfs.rootId : id, from, instant);
+      this.events.emit('navigated');
       this.world.renderOnce();
     } finally {
       this.navigating = false;
       ui.set({ fade: false });
     }
+  }
+
+  private async crumbsFor(folder: Node): Promise<{ id: Id; name: string }[]> {
+    const crumbs: { id: Id; name: string }[] = [];
+    let cur: Node | null = folder;
+    while (cur) {
+      crumbs.unshift({ id: cur.id, name: cur.id === this.vfs.rootId ? 'Home' : cur.name });
+      cur = cur.parent ? await this.vfs.stat(cur.parent).catch(() => null) : null;
+    }
+    return crumbs;
+  }
+
+  private async enterFolder(folderId: Id, from: Id | null, instant: boolean) {
+    const children = await this.vfs.list(folderId);
+    const folder = await this.vfs.stat(folderId);
+    this.nodes.clear();
+    this.nodes.set(folder.id, folder);
+    for (const c of children) this.nodes.set(c.id, c);
+    if (folder.parent) this.nodes.set(folder.parent, await this.vfs.stat(folder.parent));
+    this.childCounts.clear();
+    for (const c of children) if (c.kind === 'folder') this.childCounts.set(c.id, (await this.vfs.list(c.id)).length);
+    if (folder.parent) this.childCounts.set(folder.parent, (await this.vfs.list(folder.parent)).length);
+
+    const files = children.filter((c) => c.kind !== 'folder');
+    const folders = children.filter((c) => c.kind === 'folder');
+    let room: Room | undefined = await getRoom(folderId);
+    const layoutItems = files.map((f) => ({ id: f.id, name: f.name, kind: f.kind }));
+    const layoutFolders = folders.map((f) => ({ id: f.id, name: f.name }));
+    let overflow = 0;
+    if (!room) {
+      room = generateRoom({ roomId: folderId, kind: 'folder', items: layoutItems, folders: layoutFolders, parentId: folder.parent, title: folder.name });
+      await putRoom(room);
+    } else {
+      const r = reconcileRoom(room, layoutItems, layoutFolders, folder.parent);
+      overflow = r.overflowItems.length;
+      if (r.changed) await putRoom(r.room);
+      room = r.room;
+    }
+    // kept searches hang in the room as portal doors: show how much is behind each
+    for (const d of room.doors.filter((x) => x.portal)) {
+      const target = await getRoom(d.to);
+      this.childCounts.set(d.to, target ? target.walls.reduce((n, w) => n + w.slots.filter((s) => s.itemId).length, 0) : 0);
+    }
+
+    await this.refreshActivity();
+    const fa = this.activity.get(folderId);
+    if (fa && Math.abs(room.activity - fa.activity) > 0.02) {
+      room = { ...room, activity: fa.activity };
+      await putRoom(room);
+    }
+    await this.present({ room, files, from, instant, overflow, idleDays: fa?.idleDays ?? 0, crumbs: await this.crumbsFor(folder), title: folder.name, banner: null });
+  }
+
+  private async enterVirtual(id: Id, from: Id | null, instant: boolean) {
+    const room = (await getRoom(id))!;
+    const files: Node[] = [];
+    for (const w of room.walls)
+      for (const s of w.slots) {
+        if (!s.itemId) continue;
+        try {
+          const n = await this.vfs.stat(s.itemId);
+          if (n.kind !== 'folder') files.push(n);
+        } catch {
+          /* the file is gone: its hook stays empty */
+        }
+      }
+    const back = room.doors.find((d) => d.label === 'Back');
+    this.nodes.clear();
+    for (const f of files) this.nodes.set(f.id, f);
+    let crumbs: { id: Id; name: string }[] = [];
+    if (back && !this.isVirtual(back.to)) {
+      const origin = await this.vfs.stat(back.to).catch(() => null);
+      if (origin) {
+        this.nodes.set(origin.id, origin);
+        crumbs = await this.crumbsFor(origin);
+      }
+    }
+    this.childCounts.clear();
+    const title = room.title ?? room.query ?? 'Search';
+    crumbs.push({ id: room.id, name: room.kind === 'search' ? `Search: ${title}` : title });
+    await this.present({
+      room,
+      files,
+      from,
+      instant,
+      overflow: 0,
+      idleDays: 0,
+      crumbs,
+      title,
+      banner: { query: room.query ?? title, kept: room.kind === 'saved-view' },
+      glow: room.kind === 'search' ? (iid) => this.lamps.get(iid) ?? 0.25 : undefined,
+    });
+  }
+
+  /** Builds the view for a prepared room and puts the player in it. */
+  private async present(a: { room: Room; files: Node[]; from: Id | null; instant: boolean; overflow: number; idleDays: number; crumbs: { id: Id; name: string }[]; title: string; banner: { query: string; kept: boolean } | null; glow?: (id: Id) => number }) {
+    this.items = new Map(a.files.map((f) => [f.id, infoOf(f)]));
+    this.view?.dispose();
+    this.currentId = a.room.id;
+    this.view = new RoomView({
+      room: a.room,
+      items: this.items,
+      doorInfo: this.doorInfo,
+      renderer: this.world.renderer,
+      vfs: this.vfs,
+      thumbs: this.thumbs,
+      overflowCount: a.overflow,
+      itemIdle: (id) => this.idleDaysOf(id),
+      roomIdleDays: a.idleDays,
+      now: Date.now(),
+      props: TIERS[this.world.currentTier].props,
+      glow: a.glow,
+    });
+    this.world.root.add(this.view.group);
+    this.syncHeld();
+    this.world.sun.intensity = 0;
+    this.world.ambient.intensity = 0;
+    this.world.scene.background = null;
+    const ctx = a.room.context;
+    if (a.instant && ctx) this.player.place(ctx.px, ctx.pz, ctx.yaw);
+    else {
+      const s = this.view.spawn(a.from);
+      this.player.place(s.x, s.z, s.yaw);
+    }
+    ui.set({ crumbs: a.crumbs, roomTitle: a.title, aim: null, searchBanner: a.banner });
+    if (a.room.kind === 'folder') await setSetting('lastRoom', a.room.id);
+  }
+
+  /** Search and walk into the results as a temporary room. Returns false when nothing matched. */
+  async enterSearch(query: string): Promise<boolean> {
+    const q = query.trim();
+    if (!q) return false;
+    const hits = await this.search.query(q, 60);
+    const files: Node[] = [];
+    const lamps = new Map<Id, number>();
+    const best = hits[0]?.score || 1;
+    for (const h of hits) {
+      try {
+        const n = await this.vfs.stat(h.id);
+        if (n.kind === 'folder') continue;
+        files.push(n);
+        lamps.set(n.id, 0.2 + 0.8 * (h.score / best));
+      } catch {
+        /* stale hit */
+      }
+    }
+    if (files.length === 0) {
+      this.bus.toast(`Nothing found for "${q}"`);
+      return false;
+    }
+    const here = this.view?.room;
+    const origin = here && this.isVirtual(here.id) ? here.doors.find((d) => d.label === 'Back')?.to ?? this.vfs.rootId : this.currentId;
+    const roomId = `search:${hash32(q).toString(16)}`;
+    const room = generateRoom({
+      roomId,
+      kind: 'search',
+      items: files.map((f) => ({ id: f.id, name: f.name, kind: f.kind })),
+      folders: [],
+      parentId: origin,
+      title: q,
+      query: q,
+      seed: hash32(`q:${q}`),
+      keepOrder: true,
+      palette: WORKSHOP_PALETTE,
+    });
+    room.activity = 0.85;
+    await putRoom(room);
+    this.lamps = lamps;
+    this.events.emit('search');
+    await this.enter(roomId, origin, false);
+    return true;
+  }
+
+  /** Save the current search as a permanent room with its own door in the room it was started from. */
+  async keepSearch(): Promise<boolean> {
+    const room = this.view?.room;
+    if (!room || room.kind !== 'search') return false;
+    const back = room.doors.find((d) => d.label === 'Back');
+    const origin = back && !this.isVirtual(back.to) ? back.to : this.vfs.rootId;
+    const newId = `view:${uuid()}`;
+    const kept: Room = structuredClone(room);
+    kept.id = newId;
+    kept.kind = 'saved-view';
+    kept.walls.forEach((w) => (w.id = `${newId}:${w.side}`));
+    kept.doors.forEach((d) => {
+      d.from = newId;
+      d.id = `${newId}>${d.to}`;
+    });
+    const title = room.title ?? room.query ?? 'Saved search';
+    const host = await this.placePortal(origin, newId, title);
+    if (!host) {
+      this.bus.toast('No free door to hang this room on. Free up a doorway or keep it from Home.', 'error');
+      return false;
+    }
+    await putRoom(kept);
+    await deleteRoom(room.id);
+    const hostName = host === this.vfs.rootId ? 'Home' : (await this.vfs.stat(host)).name;
+    this.bus.toast(`Kept "${title}" as a room in ${hostName}`);
+    await this.enter(newId, null, true);
+    return true;
+  }
+
+  private async placePortal(origin: Id, viewId: Id, label: string): Promise<Id | null> {
+    for (const candidate of [origin, this.vfs.rootId]) {
+      const r = await getRoom(candidate);
+      if (!r) continue;
+      const size = { w: r.style.width, d: r.style.depth };
+      const taken = new Set(r.doors.map((d) => `${d.side}:${bayIndexOfDoor(d, size)}`));
+      const bay = allBays(size, r.doors.some((d) => d.label === 'Back')).find((b) => !taken.has(`${b.side}:${b.i}`));
+      if (!bay) continue;
+      r.doors.push(doorAt(r.id, viewId, label, bay.side, bay.i, size, true));
+      await putRoom(r);
+      return candidate;
+    }
+    return null;
+  }
+
+  /** Remove a saved view and every portal that leads to it. */
+  async deleteView() {
+    const room = this.view?.room;
+    if (!room || room.kind !== 'saved-view') return;
+    const back = room.doors.find((d) => d.label === 'Back');
+    for (const r of await allRooms()) {
+      const kept = r.doors.filter((d) => d.to !== room.id);
+      if (kept.length !== r.doors.length) await putRoom({ ...r, doors: kept });
+    }
+    await deleteRoom(room.id);
+    this.bus.toast(`Deleted the saved room "${room.title ?? ''}"`);
+    await this.enter(back?.to ?? this.vfs.rootId, null, false);
   }
 
   private async saveContext() {

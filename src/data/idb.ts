@@ -64,6 +64,10 @@ export async function putRoom(room: Room) {
   await (await db()).put('rooms', room);
 }
 
+export async function deleteRoom(id: Id) {
+  await (await db()).delete('rooms', id);
+}
+
 export async function allRooms(): Promise<Room[]> {
   return (await db()).getAll('rooms');
 }
@@ -81,8 +85,20 @@ export async function getSetting<T>(key: string): Promise<T | undefined> {
   return (await db()).get('settings', key);
 }
 
-export async function setSetting<T>(key: string, value: T) {
-  await (await db()).put('settings', value, key);
+const pendingWrites = new Set<Promise<unknown>>();
+
+/** Settings writes are tracked so they can be flushed before a reload or in tests. */
+export function setSetting<T>(key: string, value: T): Promise<void> {
+  const p = db()
+    .then((d) => d.put('settings', value, key))
+    .then(() => undefined);
+  pendingWrites.add(p);
+  void p.finally(() => pendingWrites.delete(p)).catch(() => undefined);
+  return p;
+}
+
+export async function flushWrites() {
+  await Promise.allSettled([...pendingWrites]);
 }
 
 interface StoredBlob {

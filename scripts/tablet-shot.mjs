@@ -1,0 +1,13 @@
+import { chromium } from '@playwright/test';
+const browser = await chromium.launch({ executablePath: process.env.PW_CHROMIUM, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+const ctx = await browser.newContext({ viewport: { width: 1024, height: 600 }, hasTouch: true, isMobile: false });
+const page = await ctx.newPage();
+await page.goto('http://localhost:4173/?db=tab-' + Date.now());
+await page.screenshot({ path: 'test-results/tablet-enter.png' });
+await page.getByRole('button', { name: 'Enter' }).tap();
+await page.waitForFunction(() => window.atrium?.session?.view);
+await page.evaluate(async () => { const s = window.atrium.session; const d = s.view.room.doors.find((x) => x.label !== 'Back'); await s.enter(d.to, s.currentId, true); await s.view.whenSettled(); });
+await page.evaluate(() => window.atrium.session.view && window.atrium.world.renderOnce());
+await page.waitForTimeout(700);
+await page.screenshot({ path: 'test-results/tablet-room.png' });
+await browser.close();

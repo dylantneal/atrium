@@ -115,3 +115,47 @@ input { font: inherit; color: var(--text); background: #0f0d15; border: 1px soli
 .ashes li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .confirm { display: grid; gap: 6px; border: 1px solid var(--danger); border-radius: 8px; padding: 8px; }
 button.danger { border-color: var(--danger); color: var(--danger); }
+
+.top-right { position: fixed; top: 10px; right: 10px; display: flex; gap: 6px; }
+.top-right button { background: var(--panel); border-radius: 999px; }
+.demo-chip { border-color: var(--accent); color: var(--accent); }
+
+/* ---- launcher and search banner ---- */
+.launcher-wrap { position: fixed; inset: 0; background: rgba(8,6,12,.55); display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh; z-index: 30; }
+.launcher { width: min(620px, 94vw); background: var(--panel-solid); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+.launcher input { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 16px 18px; font-size: 18px; background: transparent; }
+.launcher ul { list-style: none; margin: 0; padding: 6px; max-height: 48vh; overflow: auto; }
+.launcher li { display: flex; gap: 10px; align-items: baseline; padding: 9px 12px; border-radius: 8px; cursor: pointer; }
+.launcher li.sel { background: #2a2536; }
+.launcher li .ico { width: 18px; text-align: center; color: var(--accent); }
+.launcher li .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.launcher li .s { margin-left: auto; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+.launcher li.empty { cursor: default; }
+.launcher footer { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 12px; }
+.search-banner { position: fixed; top: 54px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--accent-2); border-radius: 999px; padding: 6px 12px; max-width: calc(100vw - 16px); flex-wrap: wrap; justify-content: center; }
+
+/* ---- docent ---- */
+.docent { position: fixed; right: 10px; bottom: 70px; width: min(380px, 94vw); max-height: 70vh; display: flex; flex-direction: column; background: var(--panel-solid); border: 1px solid var(--line); border-radius: 14px; z-index: 12; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+.docent header { display: flex; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.docent header .muted { flex: 1; font-size: 11px; }
+.docent .msgs { flex: 1; overflow: auto; padding: 10px 12px; display: grid; gap: 8px; align-content: start; min-height: 120px; }
+.msg p { margin: 0; line-height: 1.45; } .msg.user p { background: #2a2536; padding: 6px 10px; border-radius: 10px; justify-self: end; }
+.msg.user { display: grid; justify-items: end; }
+.proposal { margin-top: 8px; border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px; display: grid; gap: 6px; }
+.proposal ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
+.row { display: flex; gap: 8px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 12px; } .chips button { font-size: 12px; padding: 4px 9px; border-radius: 999px; }
+.docent form { padding: 8px 12px 12px; }
+.caption { position: fixed; left: 50%; top: 96px; transform: translateX(-50%); width: min(640px, 92vw); z-index: 14; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; display: flex; gap: 12px; align-items: center; line-height: 1.45; }
+.caption span { flex: 1; }
+
+/* ---- settings and onboarding ---- */
+.settings { position: fixed; top: 54px; right: 10px; width: min(340px, 94vw); background: var(--panel-solid); border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: grid; gap: 10px; z-index: 12; }
+.settings header { display: flex; justify-content: space-between; align-items: center; }
+.settings fieldset { border: 1px solid var(--line); border-radius: 10px; display: grid; gap: 6px; padding: 8px 10px; }
+.settings label { display: flex; gap: 8px; align-items: center; } .settings input[type='radio'] { width: auto; }
+.onboarding { position: fixed; left: 10px; top: 54px; width: min(300px, 80vw); background: var(--panel); border: 1px solid var(--accent); border-radius: 12px; padding: 10px 12px; z-index: 9; display: grid; gap: 8px; }
+.onboarding header { display: flex; gap: 6px; align-items: center; } .onboarding header b { flex: 1; font-size: 13px; }
+.onboarding ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 14px; }
+.onboarding li { color: var(--muted); } .onboarding li.now { color: var(--text); font-weight: 600; } .onboarding li.done { color: #7fe0a4; }
+.onboarding .hint { margin: 0; font-size: 13px; color: var(--accent); line-height: 1.4; }

@@ -21,6 +21,7 @@ export interface DemoOptions {
 /** In-memory tree backed by IndexedDB. Same behaviour a real folder backend must provide. */
 export class DemoVFS implements VFS {
   readonly rootId = ROOT_ID;
+  readonly demo = true;
   private nodes = new Map<Id, Node>();
   private blobCache = new Map<Id, Blob>();
   private listeners = new Set<(c: Change[]) => void>();

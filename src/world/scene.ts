@@ -33,6 +33,10 @@ export class World {
   private fpsFrames = 0;
   private fpsT = 0;
   private tier: Tier = 'high';
+  /** In auto mode the tier steps down when resolution scaling alone cannot keep up. */
+  autoTier = true;
+  private slowAtMin = 0;
+  onTierChange: (t: Tier) => void = () => {};
   readonly sun = new THREE.DirectionalLight(0xfff1dd, 1.0);
   readonly ambient = new THREE.HemisphereLight(0xcfd8ff, 0x3a3340, 0.55);
 
@@ -122,6 +126,16 @@ export class World {
     this.stats.heapMB = mem ? Math.round(mem.usedJSHeapSize / 1048576) : null;
     const changed = this.scaler.frame(ms);
     if (changed !== null) this.applyScale();
+    if (this.autoTier && this.scaler.scale <= 0.6001 && ms > 45) {
+      if (++this.slowAtMin >= 90) {
+        this.slowAtMin = 0;
+        const next: Tier | null = this.tier === 'high' ? 'medium' : this.tier === 'medium' ? 'low' : null;
+        if (next) {
+          this.setTier(next);
+          this.onTierChange(next);
+        }
+      }
+    } else if (ms <= 45) this.slowAtMin = 0;
   };
 
   private applyScale() {

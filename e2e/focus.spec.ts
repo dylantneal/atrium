@@ -4,7 +4,7 @@ async function boot(page: Page, db: string) {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
-  await page.goto(`/?db=${db}`);
+  await page.goto(`/?db=${db}&tour=off`);
   await page.getByRole('button', { name: 'Enter' }).click();
   await page.waitForFunction(() => (window as any).atrium?.session?.view);
   return errors;

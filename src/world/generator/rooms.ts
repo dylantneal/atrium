@@ -22,6 +22,9 @@ export interface GenInput {
   query?: string;
   /** Override the seed (search rooms use a hash of the query). */
   seed?: number;
+  /** Keep the given item order (search results are already ranked) instead of sorting by name. */
+  keepOrder?: boolean;
+  palette?: number;
 }
 
 export const PALETTES = [
@@ -37,7 +40,12 @@ export const PALETTES = [
   { wall: 0xb2b27a, floor: 0x4a4a2c, trim: 0x2e2e1a, accent: 0xd98f5f, ceil: 0xeeeed9 },
   { wall: 0x7f8fb5, floor: 0x232a42, trim: 0x151a2c, accent: 0xffd27a, ceil: 0xd9deef },
   { wall: 0xefe6d2, floor: 0x8a7358, trim: 0x5a4636, accent: 0xb05a4a, ceil: 0xfaf5ea },
+  // 12: the pale "workshop" used only for temporary search rooms, so they never look like a real folder
+  { wall: 0xe9ecef, floor: 0xb7bcc2, trim: 0x8c939b, accent: 0x4f8f9a, ceil: 0xffffff },
 ] as const;
+
+export const FOLDER_PALETTES = 12;
+export const WORKSHOP_PALETTE = 12;
 
 export const LANDMARK_KINDS = ['pillar', 'fountain', 'stairs', 'skylight', 'statue', 'plant', 'rug', 'lamp'] as const;
 /** Collision radius per landmark kind (0 = walk-through). */
@@ -77,9 +85,10 @@ function accepts(type: WallType, item: LayoutItem): boolean {
   return type === 'shelf' || familyOf(item.kind) === type;
 }
 
-export function makeStyle(seed: number, size: Size, landmarkCap: number): StyleParams {
+export function makeStyle(seed: number, size: Size, landmarkCap: number, paletteOverride?: number): StyleParams {
   const rng = makeRng(seed);
-  const palette = rng.int(0, PALETTES.length - 1);
+  const drawn = rng.int(0, FOLDER_PALETTES - 1);
+  const palette = paletteOverride ?? drawn;
   const height = 3 + rng.int(0, 20) / 10;
   const floor = rng.int(0, 3);
   const trim = rng.int(0, 2);
@@ -119,7 +128,7 @@ export function allBays(size: Size, reserveParent: boolean): { side: Side; i: nu
   return out;
 }
 
-function doorAt(roomId: Id, to: Id, label: string, side: Side, i: number, size: Size, portal = false): Door {
+export function doorAt(roomId: Id, to: Id, label: string, side: Side, i: number, size: Size, portal = false): Door {
   const k = bayCount(wallLength(size, side));
   return { id: `${roomId}>${to}`, from: roomId, to, side, t: (i + 0.5) / k, label, portal };
 }
@@ -144,7 +153,7 @@ function newWall(roomId: Id, side: Side, type: WallType, size: Size, height: num
 }
 
 function attempt(input: GenInput, seed: number, size: Size, sorted: LayoutItem[]) {
-  const style = makeStyle(seed, size, size.w <= 6 ? 1 : 3);
+  const style = makeStyle(seed, size, size.w <= 6 ? 1 : 3, input.palette);
   const walls: Wall[] = [];
   let remaining = sorted;
   for (const [idx, side] of SIDES.entries()) {
@@ -162,7 +171,7 @@ function attempt(input: GenInput, seed: number, size: Size, sorted: LayoutItem[]
 /** Builds a room from scratch. Deterministic in (seed, sorted items, folders). */
 export function generateRoom(input: GenInput): Room {
   const seed = input.seed ?? hash32(input.roomId);
-  const sorted = [...input.items].sort(natural);
+  const sorted = input.keepOrder ? [...input.items] : [...input.items].sort(natural);
   const folders = [...input.folders].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const reserveParent = input.parentId !== null;
   let result: ReturnType<typeof attempt> | null = null;
@@ -171,7 +180,8 @@ export function generateRoom(input: GenInput): Room {
     const r = attempt(input, seed, cls, sorted);
     const capacity = r.walls.reduce((n, w) => n + w.slots.length, 0);
     const bays = allBays(cls, reserveParent).length;
-    const fits = r.remaining.length === 0 && capacity >= sorted.length + 3 && bays >= folders.length;
+    // spare slots for new files, and two spare doorways for new folders or kept searches
+    const fits = r.remaining.length === 0 && capacity >= sorted.length + 3 && bays >= folders.length + 2;
     result = r;
     size = cls;
     if (fits) break;

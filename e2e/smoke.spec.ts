@@ -4,7 +4,7 @@ test('M0: loads, enters, renders a lit room, exposes a demo tree', async ({ page
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
-  await page.goto('/?perf&db=e2e-smoke-' + Date.now());
+  await page.goto('/?perf&tour=off&db=e2e-smoke-' + Date.now());
   await expect(page.getByRole('button', { name: 'Enter' })).toBeVisible();
   await page.getByRole('button', { name: 'Enter' }).click();
   await expect(page.getByTestId('perf')).toContainText('fps');

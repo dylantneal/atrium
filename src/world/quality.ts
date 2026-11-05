@@ -16,14 +16,16 @@ export const TIERS: Record<Tier, TierSettings> = {
 };
 
 /**
- * Adaptive resolution. Steps the render scale down after sustained slow frames
- * (30 frames over 40 ms) and back up after a long stretch of fast ones.
- * Pure so it can be unit tested without a GPU.
+ * Adaptive resolution. Works on a smoothed frame time so alternating long and short frames (which happens when a slow
+ * device catches up) still count as slow: steps the render scale down after 30 frames with the average over 40 ms,
+ * and back up after a long stretch under 20 ms. Pure so it can be unit tested without a GPU.
  */
 export class ScaleController {
   scale: number;
   private slow = 0;
   private fast = 0;
+  /** Smoothed frame time in ms. */
+  ema = 16.7;
   constructor(
     private min = 0.6,
     public max = 1,
@@ -39,10 +41,11 @@ export class ScaleController {
 
   /** Returns the new scale if it changed, else null. */
   frame(ms: number): number | null {
-    if (ms > 40) {
+    this.ema += (Math.min(ms, 500) - this.ema) * 0.1;
+    if (this.ema > 40) {
       this.slow++;
       this.fast = 0;
-    } else if (ms < 20) {
+    } else if (this.ema < 20) {
       this.fast++;
       this.slow = 0;
     } else {

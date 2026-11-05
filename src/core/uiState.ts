@@ -23,6 +23,12 @@ export interface UiState {
   listView: boolean;
   focus: { id: Id } | null;
   ashes: boolean;
+  launcher: { open: boolean; query: string };
+  docent: boolean;
+  settings: boolean;
+  perf: boolean;
+  caption: string | null;
+  searchBanner: { query: string; kept: boolean } | null;
 }
 
-export const ui = createStore<UiState>({ entered: false, fade: false, crumbs: [], aim: null, roomTitle: '', listView: false, focus: null, ashes: false });
+export const ui = createStore<UiState>({ entered: false, fade: false, crumbs: [], aim: null, roomTitle: '', listView: false, focus: null, ashes: false, launcher: { open: false, query: '' }, docent: false, settings: false, perf: new URLSearchParams(location.search).has('perf'), caption: null, searchBanner: null });

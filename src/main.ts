@@ -1,12 +1,14 @@
 import { ActionBus } from './core/actions';
 import { ui } from './core/uiState';
-import { setDbName } from './data/idb';
+import { flushWrites, getSetting, setDbName } from './data/idb';
+import type { QualityChoice } from './ui/settings/Settings';
 import { buildDemoSeed } from './demo/generator';
 import { mountUi } from './ui/hud/mount';
 import { DemoVFS } from './vfs/demo';
 import { World } from './world/scene';
 import { Session } from './world/session';
 import { FocusController } from './ui/focus/FocusController';
+import { DocentService } from './docent/service';
 
 async function boot() {
   const params = new URLSearchParams(location.search);
@@ -18,11 +20,18 @@ async function boot() {
   const vfs = await DemoVFS.open({ seed: () => buildDemoSeed(1) });
   let session: Session | null = null;
   let focus: FocusController | null = null;
-  const handles = mountUi(uiRoot, world, bus, () => session, () => focus);
+  let docent: DocentService | null = null;
+  const handles = mountUi(uiRoot, world, bus, () => session, () => focus, () => docent);
   session = new Session(world, vfs, bus, uiRoot);
   focus = new FocusController(session, vfs, bus);
+  docent = new DocentService(session);
   world.start();
   await session.start();
+  // quality: ?tier=low|medium|high|auto, else the saved choice, else auto
+  const savedQuality = (params.get('tier') ?? (await getSetting<string>('quality')) ?? 'auto') as QualityChoice;
+  world.autoTier = savedQuality === 'auto';
+  world.setTier(savedQuality === 'auto' ? 'high' : savedQuality);
+  world.onTierChange = (t) => bus.toast(`Lowered graphics quality to ${t} to keep things smooth. Change it in settings.`);
 
   let audio: AudioContext | null = null;
   handles.onEnter(() => {
@@ -33,7 +42,7 @@ async function boot() {
   });
 
   // Debug/test handle, used by Playwright.
-  (window as unknown as { atrium: unknown }).atrium = { world, bus, vfs, session, ui, focus };
+  (window as unknown as { atrium: unknown }).atrium = { world, bus, vfs, session, ui, focus, docent, flush: async () => { await session!.inventory.flush(); await flushWrites(); } };
 }
 
 void boot();

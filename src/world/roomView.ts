@@ -4,6 +4,7 @@ import type { Door, Id, Room, Side, WallType } from '../data/schema';
 import { Atlas } from './atlas';
 import { DOOR_H, DOOR_W, freeSpans, gridFor, landmarkPos, SIDES, slotGeometry, slotPose, sizeOf, wallLength, wallPoint, type SlotGeom } from './generator/layout';
 import { LANDMARK_RADIUS, PALETTES } from './generator/rooms';
+import { dustLevel, glowLevel, hasCobwebs, isNeglected, kelvinToRgb, roomLight, wear } from '../core/rules/appearance';
 import { fillTile, type ItemInfo } from './itemTiles';
 import type { ThumbService } from './thumbs';
 import type { VFS } from '../vfs/vfs';
@@ -14,6 +15,9 @@ export interface DoorInfo {
   /** Item count in the target, when known. */
   count?: number;
   isParent: boolean;
+  /** Activity of the room behind the door (0..1) and how long it has sat untouched. */
+  activity?: number;
+  idleDays?: number;
 }
 
 export type Pick =
@@ -30,6 +34,14 @@ export interface RoomViewDeps {
   thumbs: ThumbService;
   /** Items that did not fit: shown as a "+N more" note. */
   overflowCount?: number;
+  /** Days since an item was last modified or opened (drives dust). */
+  itemIdle?: (id: Id) => number;
+  roomIdleDays?: number;
+  now?: number;
+  /** 0..1 halo strength for an item. Defaults to the "changed in the last 24 hours" glow. */
+  glow?: (id: Id) => number;
+  /** Props density 0..1 from the quality tier (cobwebs are skipped below 0.5). */
+  props?: number;
 }
 
 interface PicInstance {
@@ -73,6 +85,12 @@ export class RoomView {
   private alive = true;
   private loading: Promise<void>[] = [];
   private tileOf = new Map<Id, number>();
+  private doorMats = new Map<string, { mat: THREE.MeshBasicMaterial; cur: number; target: number }>();
+  private doorLabels = new Map<string, { tex: THREE.CanvasTexture; draw: (info: DoorInfo) => void }>();
+  private cobwebs = 0;
+  private curActivity = 0.5;
+  private targetActivity = 0.5;
+  private glowMesh: THREE.InstancedMesh | null = null;
   private ghosts: THREE.InstancedMesh | null = null;
   private ghostRefs: { side: Side; slot: number }[] = [];
   private slotGeoms: { side: Side; type: WallType; geom: SlotGeom }[] = [];
@@ -105,6 +123,9 @@ export class RoomView {
     this.buildLights(pal);
     this.buildPictures(wanted);
     this.buildGhosts();
+    this.applyItemAppearance();
+    this.buildCobwebs();
+    this.curActivity = this.targetActivity = deps.room.activity;
     this.setActivity(deps.room.activity);
   }
 
@@ -263,7 +284,11 @@ export class RoomView {
         g.textAlign = 'center';
         g.fillText(info.isParent ? '↑' : '→', w / 2, h - 34);
       }, 128, 192);
-      const panel = new THREE.Mesh(new THREE.PlaneGeometry(DOOR_W, DOOR_H), new THREE.MeshBasicMaterial({ map: tex }));
+      const panelMat = new THREE.MeshBasicMaterial({ map: tex });
+      const level = this.doorLevel(info.activity);
+      panelMat.color.setScalar(level);
+      this.doorMats.set(door.id, { mat: panelMat, cur: level, target: level });
+      const panel = new THREE.Mesh(new THREE.PlaneGeometry(DOOR_W, DOOR_H), panelMat);
       const f = wallPoint(this.size, door.side, uc, DOOR_H / 2, -0.12);
       panel.position.set(f.pos.x, f.pos.y, f.pos.z);
       panel.rotation.y = f.ry;
@@ -272,10 +297,27 @@ export class RoomView {
       this.doorPanels.push(panel);
       this.disposables.push(panel.geometry, panel.material as THREE.Material, tex);
 
-      // name plate above the door
-      const label = info.isParent ? `Up: ${info.name}` : info.name;
-      const sub = info.isParent ? '' : info.count !== undefined ? `${info.count} item${info.count === 1 ? '' : 's'}` : '';
-      const ltex = labelTexture((g, w, h) => {
+      // name plate above the door (redrawn in place when the room behind it changes)
+      const lcanvas = document.createElement('canvas');
+      lcanvas.width = 512;
+      lcanvas.height = 128;
+      const ltex = new THREE.CanvasTexture(lcanvas);
+      ltex.colorSpace = THREE.SRGBColorSpace;
+      ltex.anisotropy = 4;
+      const drawLabel = (inf: DoorInfo) => {
+        const g = lcanvas.getContext('2d')!;
+        const w = lcanvas.width;
+        const h = lcanvas.height;
+        const label = inf.isParent ? `Up: ${inf.name}` : inf.name;
+        const neglected = !inf.isParent && inf.idleDays !== undefined && isNeglected(inf.idleDays);
+        const sub = inf.isParent
+          ? ''
+          : neglected
+            ? `neglected · ${inf.idleDays} days`
+            : inf.count !== undefined
+              ? `${inf.count} item${inf.count === 1 ? '' : 's'}`
+              : '';
+        g.clearRect(0, 0, w, h);
         g.fillStyle = 'rgba(16,13,22,0.88)';
         g.beginPath();
         g.roundRect(0, 0, w, h, 14);
@@ -291,11 +333,14 @@ export class RoomView {
         }
         g.fillText(label, w / 2, sub ? h * 0.38 : h / 2);
         if (sub) {
-          g.fillStyle = '#b9b0c8';
+          g.fillStyle = neglected ? '#ffb25b' : '#b9b0c8';
           g.font = '500 24px system-ui, sans-serif';
           g.fillText(sub, w / 2, h * 0.74);
         }
-      }, 512, 128);
+        ltex.needsUpdate = true;
+      };
+      drawLabel(info);
+      this.doorLabels.set(door.id, { tex: ltex, draw: drawLabel });
       const lm = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 0.425), new THREE.MeshBasicMaterial({ map: ltex, transparent: true }));
       const lf = wallPoint(this.size, door.side, uc, Math.min(DOOR_H + 0.4, this.height - 0.25), 0.03);
       lm.position.set(lf.pos.x, lf.pos.y, lf.pos.z);
@@ -583,17 +628,165 @@ export class RoomView {
     void pal;
   }
 
-  /** Light as attention: bright and warm when active, dim and cool-grey when dormant. */
+  /** Door panels read the activity of the room behind them: bright when in use, dim when dormant. */
+  private doorLevel(activity: number | undefined): number {
+    return 0.3 + 0.7 * roomLight(activity ?? 0.5).intensity;
+  }
+
+  /** Light as attention: bright and warm when active, dim and cool-grey when dormant (rules in core/rules/appearance). */
   setActivity(a: number) {
-    this.activity = a;
-    const warm = new THREE.Color(0xffb878);
-    const neutral = new THREE.Color(0xfff0e0);
+    this.curActivity = a;
+    const light = roomLight(a);
+    const intensity = light.intensity;
+    // temporary search rooms use neutral workshop light so they never read as a real (warm) folder room
+    const [r, g, b] = kelvinToRgb(this.room.kind === 'search' ? 5600 : light.kelvin);
     for (const l of this.lights) {
-      l.intensity = (6 + 22 * a) / Math.max(1, this.lights.length * 0.55);
-      l.color.copy(warm).lerp(neutral, 1 - a * 0.6);
+      l.intensity = (2 + 17 * intensity) / Math.max(1, this.lights.length * 0.55);
+      l.color.setRGB(r, g, b);
     }
-    this.hemi.intensity = 0.22 + 0.42 * a;
-    this.picMat.color.setScalar(0.5 + 0.5 * a);
+    this.hemi.intensity = 0.14 + 0.42 * intensity;
+    this.picMat.color.setScalar(0.42 + 0.58 * intensity);
+  }
+
+  /** Animate towards a new activity (1.5 s) instead of snapping, so a change is visible happening. */
+  setActivityTarget(a: number) {
+    this.targetActivity = a;
+  }
+
+  get activityNow() {
+    return this.curActivity;
+  }
+
+  setDoorState(doorId: string, info: DoorInfo) {
+    const d = this.doorMats.get(doorId);
+    if (d) d.target = this.doorLevel(info.activity);
+    this.doorLabels.get(doorId)?.draw(info);
+  }
+
+  doorBrightness(doorId: string): number | null {
+    return this.doorMats.get(doorId)?.cur ?? null;
+  }
+
+  /** Called every frame: eases light and door brightness. */
+  tick(dt: number) {
+    const k = Math.min(1, dt / 1.5 * 3);
+    if (Math.abs(this.curActivity - this.targetActivity) > 0.002) this.setActivity(this.curActivity + (this.targetActivity - this.curActivity) * k);
+    for (const d of this.doorMats.values()) {
+      if (Math.abs(d.cur - d.target) > 0.002) {
+        d.cur += (d.target - d.cur) * k;
+        d.mat.color.setScalar(d.cur);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- wear: dust, glow, cobwebs
+
+  private applyItemAppearance() {
+    const now = this.deps.now ?? Date.now();
+    const white = new THREE.Color(1, 1, 1);
+    const dust = new THREE.Color(0x7d725f);
+    const glowFn = this.deps.glow ?? ((id: Id) => glowLevel((now - (this.deps.items.get(id)?.mtime ?? 0)) / 3600000));
+    const halos: { m: THREE.Matrix4; level: number }[] = [];
+    const tmpP = new THREE.Vector3();
+    const tmpQ = new THREE.Quaternion();
+    const tmpS = new THREE.Vector3();
+    this.picInstances.forEach((inst, i) => {
+      const idle = this.deps.itemIdle?.(inst.itemId) ?? 0;
+      this.pics.setColorAt(i, white.clone().lerp(dust, wear(idle).dustAlpha));
+      const g = glowFn(inst.itemId);
+      if (g > 0.02) {
+        inst.matrix.decompose(tmpP, tmpQ, tmpS);
+        const n = new THREE.Vector3(0, 0, 1).applyQuaternion(tmpQ);
+        const m = new THREE.Matrix4().compose(tmpP.clone().addScaledVector(n, -0.002), tmpQ, new THREE.Vector3(tmpS.x + 0.3, tmpS.y + 0.3, 1));
+        halos.push({ m, level: g });
+      }
+    });
+    if (this.pics.instanceColor) this.pics.instanceColor.needsUpdate = true;
+    if (halos.length === 0) return;
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g2 = c.getContext('2d')!;
+    const grad = g2.createRadialGradient(64, 64, 20, 64, 64, 64);
+    grad.addColorStop(0, 'rgba(255,200,110,1)');
+    grad.addColorStop(0.55, 'rgba(255,170,70,0.55)');
+    grad.addColorStop(1, 'rgba(255,150,50,0)');
+    g2.fillStyle = grad;
+    g2.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c);
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+    const geo = new THREE.PlaneGeometry(1, 1);
+    this.glowMesh = new THREE.InstancedMesh(geo, mat, halos.length);
+    const col = new THREE.Color();
+    halos.forEach((h, i) => {
+      this.glowMesh!.setMatrixAt(i, h.m);
+      this.glowMesh!.setColorAt(i, col.setScalar(h.level));
+    });
+    this.glowMesh.frustumCulled = false;
+    this.glowMesh.renderOrder = 3;
+    this.group.add(this.glowMesh);
+    this.disposables.push(geo, mat, tex);
+  }
+
+  /** Items currently carrying a halo (changed in the last day, or a search-result lamp). */
+  get glowingCount() {
+    return this.glowMesh?.count ?? 0;
+  }
+
+  private buildCobwebs() {
+    const idle = this.deps.roomIdleDays ?? 0;
+    if (!hasCobwebs(idle) || (this.deps.props ?? 1) < 0.5) return;
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d')!;
+    g.strokeStyle = 'rgba(235,235,235,0.75)';
+    g.lineWidth = 1.4;
+    for (let i = 0; i <= 5; i++) {
+      const a = (i / 5) * (Math.PI / 2);
+      g.beginPath();
+      g.moveTo(0, 0);
+      g.lineTo(Math.cos(a) * 128, Math.sin(a) * 128);
+      g.stroke();
+    }
+    for (let r = 22; r <= 120; r += 20) {
+      g.beginPath();
+      for (let i = 0; i <= 5; i++) {
+        const a = (i / 5) * (Math.PI / 2);
+        const rr = r * (i % 2 ? 0.86 : 1);
+        const x = Math.cos(a) * rr;
+        const y = Math.sin(a) * rr;
+        if (i === 0) g.moveTo(x, y);
+        else g.lineTo(x, y);
+      }
+      g.stroke();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    const geo = new THREE.PlaneGeometry(1.1, 1.1);
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+    this.disposables.push(tex, geo, mat);
+    for (const side of ['N', 'S'] as const) {
+      const L = wallLength(this.size, side);
+      for (const left of [true, false]) {
+        const m = new THREE.Mesh(geo, mat);
+        const f = wallPoint(this.size, side, left ? 0.55 : L - 0.55, this.height - 0.55, 0.03);
+        m.position.set(f.pos.x, f.pos.y, f.pos.z);
+        m.rotation.y = f.ry;
+        // texture's web corner is bottom-left in plane space; flip so the corner sits at the wall corner, top
+        m.scale.set(left ? 1 : -1, -1, 1);
+        this.group.add(m);
+        this.cobwebs++;
+      }
+    }
+  }
+
+  /** Snapshot of how wear, glow and light are being applied (used by tests and the perf overlay). */
+  appearance() {
+    let dustiest = 1;
+    const c = new THREE.Color();
+    for (let i = 0; i < this.picInstances.length; i++) {
+      this.pics.getColorAt(i, c);
+      dustiest = Math.min(dustiest, c.b);
+    }
+    return { cobwebs: this.cobwebs, glowing: this.glowingCount, activity: this.curActivity, dustiestBlue: dustiest };
   }
 
   // ---------------------------------------------------------------- queries

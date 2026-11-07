@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, net, protocol, session, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, net, protocol, session } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -87,11 +87,9 @@ function createWindow(): BrowserWindow {
     },
   });
   win.setMenuBarVisibility(false);
-  // the app never opens windows or navigates elsewhere; links to the web go to the user's browser on explicit request only
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) void shell.openExternal(url);
-    return { action: 'deny' };
-  });
+  // the page can never open windows or launch the user's browser on its own: denied outright.
+  // (Opening a link in the system browser will be an explicit, validated bridge call, never a side effect of window.open.)
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e, url) => {
     if (!isAppUrl(url)) e.preventDefault();
   });

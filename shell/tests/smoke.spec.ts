@@ -24,8 +24,16 @@ async function enter(page: Page) {
 
 let handle: { app: ElectronApplication; page: Page; problems: string[] } | null = null;
 test.afterEach(async () => {
-  await handle?.app.close().catch(() => {});
+  const h = handle;
   handle = null;
+  if (!h) return;
+  // closing must never hang the suite: ask nicely, then kill
+  await Promise.race([h.app.close().catch(() => {}), new Promise((r) => setTimeout(r, 10_000))]);
+  try {
+    h.app.process().kill('SIGKILL');
+  } catch {
+    /* already gone */
+  }
 });
 
 test('shell: serves the built app on its own origin, boots under the strict CSP, and exposes only the narrow bridge', async () => {

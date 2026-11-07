@@ -1,3 +1,6 @@
+import { h } from 'preact';
+import * as THREE from 'three';
+import { AppRoom, makeAppRoom } from './apps/appRoom';
 import { ActionBus } from './core/actions';
 import { ui } from './core/uiState';
 import { flushWrites, getSetting, setDbName } from './data/idb';
@@ -9,6 +12,7 @@ import { World } from './world/scene';
 import { Session } from './world/session';
 import { FocusController } from './ui/focus/FocusController';
 import { DocentService } from './docent/service';
+import { registerBuiltins } from './apps/builtin';
 
 async function boot() {
   const params = new URLSearchParams(location.search);
@@ -25,6 +29,7 @@ async function boot() {
   session = new Session(world, vfs, bus, uiRoot);
   focus = new FocusController(session, vfs, bus);
   docent = new DocentService(session);
+  await registerBuiltins(session.apps, session, docent);
   world.start();
   await session.start();
   // quality: ?tier=low|medium|high|auto, else the saved choice, else auto
@@ -42,7 +47,7 @@ async function boot() {
   });
 
   // Debug/test handle, used by Playwright.
-  (window as unknown as { atrium: unknown }).atrium = { world, bus, vfs, session, ui, focus, docent, flush: async () => { await session!.inventory.flush(); await flushWrites(); } };
+  (window as unknown as { atrium: unknown }).atrium = { world, bus, vfs, session, ui, focus, docent, apps: session.apps, three: THREE, kit: { AppRoom, makeAppRoom, h }, flush: async () => { await session!.inventory.flush(); await flushWrites(); } };
 }
 
 void boot();

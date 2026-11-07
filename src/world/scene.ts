@@ -21,6 +21,8 @@ export class World {
   readonly camera = new THREE.PerspectiveCamera(70, 1, 0.05, 80);
   /** Everything belonging to the current room lives under this group. */
   readonly root = new THREE.Group();
+  /** Things held in the player's hand are drawn in a second pass so they never clip into walls. */
+  readonly handScene = new THREE.Scene();
   readonly stats: PerfStats = { fps: 0, frameMs: 0, drawCalls: 0, triangles: 0, textures: 0, geometries: 0, heapMB: null, scale: 1 };
 
   private hooks = new Set<FrameHook>();
@@ -48,6 +50,11 @@ export class World {
     this.scene.fog = new THREE.Fog(0x14121a, 12, 34);
     this.sun.position.set(3, 8, 2);
     this.scene.add(this.ambient, this.sun, this.root);
+    this.handScene.add(new THREE.HemisphereLight(0xffffff, 0x666677, 1.1));
+    const handSun = new THREE.DirectionalLight(0xffffff, 1.4);
+    handSun.position.set(0.5, 1, 0.8);
+    this.handScene.add(handSun);
+    this.renderer.info.autoReset = false;
     this.camera.position.set(0, 1.6, 0);
     this.camera.rotation.order = 'YXZ';
     this.setTier('high');
@@ -87,7 +94,19 @@ export class World {
   /** Test hook: render exactly one frame with a fixed dt. */
   renderOnce(dt = 1 / 60) {
     for (const h of this.hooks) h(dt, performance.now() / 1000);
+    this.renderAll();
+  }
+
+  /** The room, then (only when something is held) the hand pass on a cleared depth buffer. */
+  private renderAll() {
+    this.renderer.info.reset();
     this.renderer.render(this.scene, this.camera);
+    if (this.handScene.children.some((c) => c.visible && (c as THREE.Group).children.length > 0 && !(c as THREE.Light).isLight)) {
+      this.renderer.autoClear = false;
+      this.renderer.clearDepth();
+      this.renderer.render(this.handScene, this.camera);
+      this.renderer.autoClear = true;
+    }
   }
 
   private startLoop() {
@@ -106,7 +125,7 @@ export class World {
     if (this.paused) return;
     const dt = Math.min(0.1, ms / 1000);
     for (const h of this.hooks) h(dt, now / 1000);
-    this.renderer.render(this.scene, this.camera);
+    this.renderAll();
 
     this.emaMs = this.emaMs * 0.9 + ms * 0.1;
     this.fpsFrames++;

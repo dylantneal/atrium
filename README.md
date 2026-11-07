@@ -26,6 +26,8 @@ The app starts on generated demo data (six projects, about 200 files). It has no
 | Hands | Pick up (E, right-click, long-press), carry up to eight items, place on any glowing spot, drop through a door, copy with Shift. Everything is undoable. Trash is recoverable until emptied. |
 | Search as a room | Ctrl+K or `/`. Fuzzy, ranked search; Ctrl+Enter builds the results into a temporary room with result lamps; Keep turns it into a saved room with its own door. |
 | Docent | Rule-based, on-device. Sorts a wall by colour/name/date/size/kind, summarizes a room, suggests threads, tags items, gives a tour. Changes are previewed and applied only on confirmation. |
+| App platform | Apps plug in as tools you carry (hotbar, raise with `R`), rooms behind doors in the **Hall** (`A`), flat surfaces, panels and launcher commands. The docent, settings and trash are registered through it. |
+| Desktop shell | `shell/`: an Electron app that serves the built web app from a private origin under a strict CSP, with a narrow `window.atriumShell` bridge. Real folders and real web pages as 3D textures come next. |
 | Also | Welcome tour, quality tiers with auto step-down, accessible list view (`L`), settings (control room). |
 
 ### Controls
@@ -45,8 +47,9 @@ The app starts on generated demo data (six projects, about 200 files). It has no
 
 ```bash
 npm run typecheck
-npm test           # 74 unit, property and contract tests (Vitest)
-npm run e2e        # 20 browser tests (Playwright). Set PW_CHROMIUM=/path/to/chromium to reuse an installed browser.
+npm test           # 81 unit, property and contract tests (Vitest)
+npm run e2e        # 24 browser tests (Playwright). Set PW_CHROMIUM=/path/to/chromium to reuse an installed browser.
+npm run shell:test # the Electron shell under Xvfb (run `npm run shell:install` once)
 npm run perf       # scripted flythrough with 4x CPU throttle (software GL: relative numbers only)
 ```
 

@@ -48,7 +48,7 @@ test('M4: search builds a ranked room, Keep saves it behind a door, and it survi
   });
   const portal = await page.evaluate(() => {
     const s = (window as any).atrium.session;
-    const d = s.view.room.doors.find((x: any) => x.portal);
+    const d = s.view.room.doors.find((x: any) => x.portal && x.to.startsWith('view:'));
     return d ? { label: d.label, to: d.to, count: s.childCounts.get(d.to) } : null;
   });
   expect(portal).toMatchObject({ label: 'crow', to: keptId });
@@ -63,7 +63,7 @@ test('M4: search builds a ranked room, Keep saves it behind a door, and it survi
   // deleting removes the door
   await page.getByRole('button', { name: 'Delete room' }).click();
   await page.waitForFunction(() => (window as any).atrium.session.currentId === (window as any).atrium.vfs.rootId);
-  expect(await page.evaluate(() => (window as any).atrium.session.view.room.doors.some((x: any) => x.portal))).toBe(false);
+  expect(await page.evaluate(() => (window as any).atrium.session.view.room.doors.some((x: any) => x.portal && x.to.startsWith('view:')))).toBe(false);
   expect(errors).toEqual([]);
 });
 

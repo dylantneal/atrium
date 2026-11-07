@@ -7,12 +7,12 @@ import { FocusOverlay } from '../focus/FocusOverlay';
 import type { FocusController } from '../focus/FocusController';
 import { ListView } from '../list-view/ListView';
 import { ui } from '../../core/uiState';
-import { Ashes, DemoChip, Hotbar } from './Hotbar';
+import { DemoChip, Hotbar } from './Hotbar';
+import { PanelHost } from './PanelHost';
 import { Launcher, SearchBanner } from '../launcher/Launcher';
-import { CaptionBar, DocentPanel } from '../docent/Docent';
 import { Onboarding } from '../onboarding/Onboarding';
-import { Settings } from '../settings/Settings';
 import type { DocentService } from '../../docent/service';
+import { useStore } from './useStore';
 import { Crumbs, Enter, Fade, PerfOverlay, Reticle, Toasts, useUi } from './App';
 
 export interface UiHandles {
@@ -80,7 +80,6 @@ export function mountUi(el: HTMLElement, world: World, bus: ActionBus, session: 
 import { useEffect as useEffectH, useState as useStateH } from 'preact/hooks';
 function FocusHost({ focus, docent }: { focus: () => FocusController | null; docent: () => DocentService | null }) {
   const [ctl, setCtl] = useStateH<FocusController | null>(focus());
-  const [replay, setReplay] = useStateH(0);
   useEffectH(() => {
     const t = setInterval(() => {
       const c = focus();
@@ -96,22 +95,17 @@ function FocusHost({ focus, docent }: { focus: () => FocusController | null; doc
     <>
       <Hotbar session={ctl.session} />
       <DemoChip session={ctl.session} />
-      <Ashes session={ctl.session} />
       <SearchBanner ctl={ctl} />
       <FocusOverlay ctl={ctl} />
       <ListView ctl={ctl} />
-      <Launcher
-        ctl={ctl}
-        extra={[
-          { id: 'docent', title: 'Ask the docent…', run: () => ui.set({ docent: true }) },
-          { id: 'settings', title: 'Settings (control room)', run: () => ui.set({ settings: true }) },
-          { id: 'replay', title: 'Replay the welcome tour', run: () => setReplay((n) => n + 1) },
-        ]}
-      />
-      <Settings session={ctl.session} onReplay={() => (ui.set({ settings: false }), setReplay((n) => n + 1))} />
-      <Onboarding session={ctl.session} replay={replay} />
-      {docent() && <DocentPanel docent={docent()!} />}
-      {docent() && <CaptionBar docent={docent()!} />}
+      <LauncherHost ctl={ctl} />
+      <Onboarding session={ctl.session} />
+      <PanelHost session={ctl.session} />
     </>
   );
+}
+
+function LauncherHost({ ctl }: { ctl: FocusController }) {
+  useStore(ctl.session.apps.version);
+  return <Launcher ctl={ctl} extra={ctl.session.apps.commands()} />;
 }

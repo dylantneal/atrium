@@ -13,7 +13,6 @@ export const baseCommands: LauncherCommand[] = [
   { id: 'home', title: 'Go home', run: (c) => void c.session.enter(c.vfs.rootId, c.session.currentId, false) },
   { id: 'up', title: 'Go up one level', hint: 'B', run: (c) => void c.session.goUp() },
   { id: 'list', title: 'Show this room as a list', hint: 'L', run: () => ui.set({ listView: !ui.get().listView }) },
-  { id: 'trash', title: 'Open the trash', run: () => ui.set({ ashes: true }) },
   {
     id: 'note',
     title: 'New note here',

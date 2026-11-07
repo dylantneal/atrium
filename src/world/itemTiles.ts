@@ -1,7 +1,7 @@
 import type { Id, Node } from '../data/schema';
 import type { VFS } from '../vfs/vfs';
 import type { Atlas } from './atlas';
-import { paintAudio, paintDocument, paintFolder, paintGeneric, paintImage, paintPlaceholder, paintVideo } from './tiles';
+import { paintAudio, paintDocument, paintFolder, paintGeneric, paintImage, paintPlaceholder, paintTool, paintVideo } from './tiles';
 import type { ThumbService } from './thumbs';
 
 export interface ItemInfo {
@@ -12,6 +12,8 @@ export interface ItemInfo {
   mtime: number;
   color?: number;
   tags: string[];
+  /** Glyph for tool tiles. */
+  icon?: string;
 }
 
 export const infoOf = (n: Node): ItemInfo => ({ id: n.id, name: n.name, kind: n.kind, size: n.size, mtime: n.mtime, color: n.color, tags: n.tags });
@@ -50,6 +52,9 @@ export function fillTile(atlas: Atlas, tile: number, item: ItemInfo, vfs: VFS, t
       return Promise.resolve();
     case 'folder':
       atlas.paint(tile, (c, w, h) => paintFolder(c, w, h, item.name));
+      return Promise.resolve();
+    case 'tool':
+      atlas.paint(tile, (c, w, h) => paintTool(c, w, h, item.name, item.icon ?? '◆'));
       return Promise.resolve();
     default:
       atlas.paint(tile, (c, w, h) => paintGeneric(c, w, h, item.name, item.kind));

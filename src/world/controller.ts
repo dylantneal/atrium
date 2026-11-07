@@ -1,7 +1,7 @@
 import type * as THREE from 'three';
 import type { Door } from '../data/schema';
 import type { Input } from './input';
-import type { RoomView } from './roomView';
+import type { RoomLike } from './roomLike';
 
 export const PLAYER_RADIUS = 0.5;
 export const EYE_HEIGHT = 1.6;
@@ -35,7 +35,7 @@ export class PlayerController {
     this.pitch = Math.max(-1.25, Math.min(1.25, this.pitch - dy * 0.0045));
   }
 
-  update(dt: number, input: Input, view: RoomView | null) {
+  update(dt: number, input: Input, view: RoomLike | null) {
     const m = input.poll();
     this.yaw += input.turn * 1.9 * dt;
     if (view && !this.pendingDoor) {

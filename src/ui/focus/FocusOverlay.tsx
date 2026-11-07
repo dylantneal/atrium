@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useState } from 'preact/hooks';
 import type { Node } from '../../data/schema';
 import { useUi } from '../hud/App';
 import { Drawer } from './Drawer';
@@ -51,6 +51,28 @@ function MetaCard({ node }: { node: Node }) {
   );
 }
 
+/** Full-screen host for an app's flat surface. Same chrome as file viewers: Close button and Esc. */
+function SurfaceShell({ ctl }: { ctl: FocusController }) {
+  const { surface } = useUi();
+  const app = surface ? ctl.session.apps.get(surface.appId) : undefined;
+  const appCtx = surface ? ctl.session.apps.context(surface.appId) : undefined;
+  if (!surface || !app?.surface || !appCtx) return null;
+  const title = typeof app.surface.title === 'function' ? app.surface.title(surface.props) : app.surface.title;
+  return (
+    <div class="focus" role="dialog" aria-modal="true" aria-label={title} data-testid="focus">
+      <header class="focus-bar">
+        <button onClick={() => void ctl.close()} aria-label="Close and return to the room" data-testid="focus-close">✕ Close</button>
+        <div class="focus-title">
+          <b>{title}</b>
+        </div>
+      </header>
+      <div class="focus-body">
+        <main class="viewer" data-testid="surface">{app.surface.render(surface.props, { ctx: appCtx, close: () => void ctl.close() })}</main>
+      </div>
+    </div>
+  );
+}
+
 export function FocusOverlay({ ctl }: { ctl: FocusController }) {
   const { focus } = useUi();
   const [node, setNode] = useState<Node | null>(null);
@@ -69,7 +91,8 @@ export function FocusOverlay({ ctl }: { ctl: FocusController }) {
     };
   }, [focus?.id]);
 
-  useEffect(() => {
+  // layout effect: the key handler must be live the instant the overlay is on screen, or a quick Esc is lost
+  useLayoutEffect(() => {
     if (!focus) return;
     const k = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
@@ -86,6 +109,7 @@ export function FocusOverlay({ ctl }: { ctl: FocusController }) {
   }, [focus?.id]);
 
   if (!focus) return null;
+  if (focus.id.startsWith('surface:')) return <SurfaceShell ctl={ctl} />;
   const n = node && node.id === focus.id ? node : null;
   const order = ctl.session.view?.itemOrder() ?? [];
   const pos = order.indexOf(focus.id);

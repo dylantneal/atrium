@@ -3,3 +3,7 @@ dist
 test-results
 playwright-report
 *.log
+
+shell/node_modules
+shell/dist
+shell/test-results

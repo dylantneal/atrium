@@ -16,7 +16,12 @@ import { SearchService } from './searchService';
 import { Input, type TapEvent } from './input';
 import { infoOf, type ItemInfo } from './itemTiles';
 import type { Change } from '../vfs/vfs';
-import { RoomView, type DoorInfo } from './roomView';
+import { RoomView } from './roomView';
+import type { DoorInfo, Pick, RoomLike } from './roomLike';
+import { AppRegistry } from '../apps/registry';
+import { buildHall } from '../apps/hall';
+import { appIdOfTool, HALL_ID, isAppRoomId, isToolRef, roomIdOf, type SessionFacade, type ToolInstance } from '../apps/api';
+import { AppRoom, makeAppRoom } from '../apps/appRoom';
 import type { World } from './scene';
 import { ThumbService } from './thumbs';
 
@@ -39,7 +44,7 @@ function bytes(n: number): string {
 
 /** Owns navigation: which room is loaded, the player, input, and the hover/tap loop. */
 export class Session {
-  view: RoomView | null = null;
+  view: RoomLike | null = null;
   currentId: Id;
   readonly player: PlayerController;
   readonly input: Input;
@@ -52,6 +57,13 @@ export class Session {
   readonly inventory = new Inventory();
   readonly events = new Emitter<GameEvent>();
   readonly search: SearchService;
+  readonly apps: AppRegistry;
+  /** The tool currently raised in the player's hand, if any. */
+  raised: { appId: string; instance: ToolInstance } | null = null;
+  private handGroup = new THREE.Group();
+  /** Set by the surface host (FocusController) so apps can open a full-screen surface. */
+  openSurfaceHook: ((appId: string, props?: unknown) => Promise<void>) | null = null;
+  closeSurfaceHook: (() => Promise<void>) | null = null;
   private lamps = new Map<Id, number>();
   /** Per-folder activity, refreshed on entry and whenever files change. */
   activity = new Map<Id, FolderActivity>();
@@ -84,6 +96,18 @@ export class Session {
     this.inventory.store.subscribe(() => this.syncHeld());
     addEventListener('pagehide', () => void this.inventory.flush());
     this.handCtx = { vfs, inventory: this.inventory, batch: (fn) => this.batch(fn) };
+    const facade: SessionFacade = {
+      enter: (id) => this.enter(id, this.currentId, false),
+      toast: (t, k) => bus.toast(t, k),
+      openSurface: (a, p) => this.openSurfaceHook?.(a, p) ?? Promise.resolve(),
+      closeSurface: () => this.closeSurfaceHook?.() ?? Promise.resolve(),
+      get currentRoomId() {
+        return self.currentId;
+      },
+    };
+    const self = this;
+    this.apps = new AppRegistry(() => ({ vfs, bus, session: facade, notify: (n) => bus.toast(n.body ? `${n.title}: ${n.body}` : n.title) }));
+    world.handScene.add(this.handGroup);
   }
 
   /** Hand commands run several changes as one: no rebuild until the whole batch is done. */
@@ -107,10 +131,14 @@ export class Session {
     if (!this.view) return;
     const held = this.inventory.heldIds;
     for (const id of held) {
-      if (!this.heldNames.has(id) && !this.items.has(id)) void this.vfs.stat(id).then((n) => this.heldNames.set(id, n.name)).catch(() => {});
+      if (isToolRef(id)) this.heldNames.set(id, this.apps.toolApp(id)?.tool?.name ?? 'tool');
+      else if (!this.heldNames.has(id) && !this.items.has(id)) void this.vfs.stat(id).then((n) => this.heldNames.set(id, n.name)).catch(() => {});
     }
+    // a raised tool is lowered when it is no longer the selected slot
+    const sel = this.inventory.selectedId;
+    if (this.raised && sel !== `tool:${this.raised.appId}`) this.lower();
     this.view.setHeld(held);
-    this.view.setCarrying(this.view.room.kind === 'folder' && this.inventory.selectedId !== null, held);
+    this.view.setCarrying(this.view.room.kind === 'folder' && sel !== null && !isToolRef(sel), held);
   }
 
   /** Smoothly moves the camera to a pose; resolves when it arrives. The player state is untouched. */
@@ -249,7 +277,7 @@ export class Session {
     this.demo = this.vfs.demo;
     await this.refreshActivity();
     void this.search.init();
-    await this.inventory.load((id) => this.vfs.stat(id).then(() => true, () => false));
+    await this.inventory.load((id) => (isToolRef(id) ? Promise.resolve(this.apps.hasTool(id)) : this.vfs.stat(id).then(() => true, () => false)));
     const last = await getSetting<Id>('lastRoom');
     let target = this.vfs.rootId;
     if (last) {
@@ -277,6 +305,10 @@ export class Session {
       return;
     }
     this.view?.tick(dt);
+    if (this.raised) {
+      this.raised.instance.update?.(dt);
+      this.placeHand();
+    } else this.handGroup.visible = false;
     if (this.paused) return;
     this.player.update(dt, this.input, this.view);
     if (this.player.pendingDoor && !this.navigating) {
@@ -305,8 +337,13 @@ export class Session {
   /** Names of carried items that are not in this room (learned when picked up). */
   private heldNames = new Map<Id, string>();
 
-  private describe(hit: NonNullable<ReturnType<RoomView['pick']>>): Aim {
+  private describe(hit: NonNullable<Pick>): Aim {
     const holding = this.heldName();
+    if (hit.type === 'object') {
+      const spec = this.apps.get(hit.appId)?.room;
+      const d = spec?.describe?.(hit.objectId);
+      return { kind: 'object', id: hit.objectId, name: d?.name ?? hit.objectId, detail: d?.detail ?? '', hint: d?.hint ?? 'Click to use' };
+    }
     if (hit.type === 'door') {
       const info = this.doorInfo(hit.door);
       return {
@@ -321,6 +358,7 @@ export class Session {
       return { kind: 'slot', id: `${hit.side}:${hit.slot}`, name: 'Empty spot', detail: holding ? `Place "${holding}" here` : '', hint: holding ? (this.inventory.store.get().copy ? 'E: place a copy' : 'E: place here') : '' };
     }
     const it = this.items.get(hit.itemId);
+    if (it?.kind === 'tool') return { kind: 'item', id: hit.itemId, name: it.name, detail: this.apps.toolApp(hit.itemId)?.tool?.description ?? 'A tool', hint: 'E or long-press: take it · then R to raise it' };
     const where = this.view && this.view.room.kind !== 'folder' ? this.search.paths.get(hit.itemId) : '';
     return { kind: 'item', id: hit.itemId, name: it?.name ?? '?', detail: where ? `in ${where || 'Home'}` : it ? `${it.kind} · ${bytes(it.size)} · ${ago(it.mtime)}` : '', hint: 'Click: open · E or long-press: pick up' };
   }
@@ -335,14 +373,16 @@ export class Session {
       const it = this.items.get(hit.itemId);
       if (!this.inventory.pickUp(hit.itemId)) return this.bus.toast('Your hands are full. Put something down first.', 'error');
       if (it) this.heldNames.set(hit.itemId, it.name);
-      this.bus.toast(`Picked up ${it?.name ?? 'item'}`);
-      this.events.emit('pickup');
+      this.bus.toast(it?.kind === 'tool' ? `Took the ${it.name}. Press R to raise it.` : `Picked up ${it?.name ?? 'item'}`);
+      if (it?.kind !== 'tool') this.events.emit('pickup');
     } else if (hit.type === 'slot') {
       if (!sel) return this.bus.toast('Pick something up first', 'error');
+      if (isToolRef(sel)) return this.bus.toast('Tools live on the Hall shelf. Press Q to put it back.', 'error');
       const copy = shift || this.inventory.store.get().copy;
       if (await this.bus.dispatch(placeCmd(this.handCtx, sel, this.currentId, { side: hit.side, slot: hit.slot }, copy))) this.events.emit('placed');
     } else if (hit.type === 'door') {
       if (!sel) return;
+      if (isToolRef(sel)) return this.bus.toast('Tools cannot be dropped into a room. Press Q to put it back.', 'error');
       const info = this.doorInfo(hit.door);
       if (await this.bus.dispatch(dropIntoCmd(this.handCtx, sel, hit.door.to, info.name))) this.events.emit('placed');
     }
@@ -362,6 +402,7 @@ export class Session {
 
   async trashSelected() {
     const id = this.inventory.selectedId;
+    if (id && isToolRef(id)) return this.putBack();
     if (id) await this.bus.dispatch(trashCmd(this.handCtx, id));
   }
 
@@ -392,7 +433,7 @@ export class Session {
   }
 
   isVirtual(id: Id) {
-    return id.startsWith('search:') || id.startsWith('view:');
+    return id.startsWith('search:') || id.startsWith('view:') || isAppRoomId(id);
   }
 
   /** Loads a room (a folder, a search result, or a saved view). Crossfades through black unless `instant`. */
@@ -405,7 +446,8 @@ export class Session {
       }
       if (!keepContext) await this.saveContext();
       this.thumbs.clearQueue();
-      if (this.isVirtual(id) && (await getRoom(id))) await this.enterVirtual(id, from, instant);
+      if (isAppRoomId(id) && (id === HALL_ID || this.apps.roomApp(id))) await this.enterApp(id, from, instant);
+      else if (this.isVirtual(id) && !isAppRoomId(id) && (await getRoom(id))) await this.enterVirtual(id, from, instant);
       else await this.enterFolder(this.isVirtual(id) ? this.vfs.rootId : id, from, instant);
       this.events.emit('navigated');
       this.world.renderOnce();
@@ -451,10 +493,14 @@ export class Session {
       if (r.changed) await putRoom(r.room);
       room = r.room;
     }
+    // the Hall hangs in Home as a portal door (the A key and the hotbar also lead there)
+    if (folderId === this.vfs.rootId && !room.doors.some((d) => d.to === HALL_ID)) {
+      if (await this.placePortal(folderId, HALL_ID, 'Apps')) room = (await getRoom(folderId)) ?? room;
+    }
     // kept searches hang in the room as portal doors: show how much is behind each
-    for (const d of room.doors.filter((x) => x.portal)) {
+    for (const d of room.doors.filter((x) => x.portal && !isAppRoomId(x.to))) {
       const target = await getRoom(d.to);
-      this.childCounts.set(d.to, target ? target.walls.reduce((n, w) => n + w.slots.filter((s) => s.itemId).length, 0) : 0);
+      if (target) this.childCounts.set(d.to, target.walls.reduce((n, w) => n + w.slots.filter((s) => s.itemId).length, 0));
     }
 
     await this.refreshActivity();
@@ -510,9 +556,7 @@ export class Session {
   /** Builds the view for a prepared room and puts the player in it. */
   private async present(a: { room: Room; files: Node[]; from: Id | null; instant: boolean; overflow: number; idleDays: number; crumbs: { id: Id; name: string }[]; title: string; banner: { query: string; kept: boolean } | null; glow?: (id: Id) => number }) {
     this.items = new Map(a.files.map((f) => [f.id, infoOf(f)]));
-    this.view?.dispose();
-    this.currentId = a.room.id;
-    this.view = new RoomView({
+    const view = new RoomView({
       room: a.room,
       items: this.items,
       doorInfo: this.doorInfo,
@@ -526,19 +570,51 @@ export class Session {
       props: TIERS[this.world.currentTier].props,
       glow: a.glow,
     });
-    this.world.root.add(this.view.group);
+    await this.mount(view, a.room, { from: a.from, instant: a.instant, crumbs: a.crumbs, title: a.title, banner: a.banner });
+  }
+
+  /** Swap the current room for a prepared one: dispose the old, place the player, update the HUD. */
+  private async mount(view: RoomLike, room: Room, a: { from: Id | null; instant: boolean; crumbs: { id: Id; name: string }[]; title: string; banner: { query: string; kept: boolean } | null }) {
+    this.view?.dispose();
+    this.currentId = room.id;
+    this.view = view;
+    this.world.root.add(view.group);
     this.syncHeld();
     this.world.sun.intensity = 0;
     this.world.ambient.intensity = 0;
     this.world.scene.background = null;
-    const ctx = a.room.context;
+    const ctx = room.context;
     if (a.instant && ctx) this.player.place(ctx.px, ctx.pz, ctx.yaw);
     else {
-      const s = this.view.spawn(a.from);
-      this.player.place(s.x, s.z, s.yaw);
+      const sp = view.spawn(a.from);
+      this.player.place(sp.x, sp.z, sp.yaw);
     }
     ui.set({ crumbs: a.crumbs, roomTitle: a.title, aim: null, searchBanner: a.banner });
-    if (a.room.kind === 'folder') await setSetting('lastRoom', a.room.id);
+    if (room.kind === 'folder') await setSetting('lastRoom', room.id);
+  }
+
+  /** The Hall, or a room an app provides. These are built fresh each visit and never saved. */
+  private async enterApp(id: Id, from: Id | null, instant: boolean) {
+    const deps = { renderer: this.world.renderer, vfs: this.vfs, thumbs: this.thumbs, doorInfo: this.doorInfo };
+    this.nodes.clear();
+    this.childCounts.clear();
+    let view: AppRoom;
+    let title: string;
+    const rootCrumb = { id: this.vfs.rootId, name: 'Home' };
+    if (id === HALL_ID) {
+      view = buildHall(this.apps, this.vfs.rootId, { ...deps, props: TIERS[this.world.currentTier].props });
+      title = 'Apps';
+      this.items = new Map([...view.deps.items]);
+      ui.set({});
+      await this.mount(view, view.room, { from, instant, crumbs: [rootCrumb, { id, name: title }], title, banner: null });
+      return;
+    }
+    const app = this.apps.roomApp(id)!;
+    const ctx = this.apps.context(app.id)!;
+    const built = await app.room!.build(ctx, deps);
+    title = app.room!.title;
+    this.items = new Map();
+    await this.mount(built, built.room, { from, instant, crumbs: [rootCrumb, { id: HALL_ID, name: 'Apps' }, { id, name: title }], title, banner: null });
   }
 
   /** Search and walk into the results as a temporary room. Returns false when nothing matched. */
@@ -654,10 +730,13 @@ export class Session {
 
   private tap(e: TapEvent) {
     if (this.paused || !this.view || this.navigating) return;
+    if (this.raised && this.pressTool(e.ndcX, e.ndcY)) return;
     const hit = this.view.pick(this.world.camera, e.ndcX, e.ndcY);
     if (!hit) return;
     if (hit.type === 'door') void this.go(hit.door);
     else if (hit.type === 'slot') void this.primary(e.ndcX, e.ndcY);
+    else if (hit.type === 'object') this.activateObject(hit.appId, hit.objectId);
+    else if (this.items.get(hit.itemId)?.kind === 'tool') void this.primary(e.ndcX, e.ndcY);
     else this.onItemActivate?.(hit.itemId);
   }
 
@@ -666,15 +745,75 @@ export class Session {
 
   private key(k: string, e?: KeyboardEvent) {
     if (this.paused) return;
+    if (this.raised && this.raised.instance.onKey?.(k, e)) return;
+    if (k === 'r') return this.toggleRaise();
+    if (k === 'escape' && this.raised) return this.lower();
+    if (k === 'a' && !e?.ctrlKey && !e?.metaKey && !this.raised) return void this.enter(HALL_ID, this.currentId, false);
     if (k === 'backspace' || k === 'b') void this.goUp();
     else if (k === 'e') void this.primary(0, 0, e?.shiftKey ?? false);
     else if (k === 'enter' || k === 'f') {
       const hit = this.view?.pick(this.world.camera, 0, 0);
       if (hit?.type === 'door') void this.go(hit.door);
-      else if (hit?.type === 'item') this.onItemActivate?.(hit.itemId);
+      else if (hit?.type === 'object') this.activateObject(hit.appId, hit.objectId);
+      else if (hit?.type === 'item' && this.items.get(hit.itemId)?.kind !== 'tool') this.onItemActivate?.(hit.itemId);
     } else if (k === 'q') this.putBack();
     else if (k === 'delete') void this.trashSelected();
     else if (/^[1-8]$/.test(k)) this.inventory.select(Number(k) - 1);
+  }
+
+  // ---------------------------------------------------------------- tools in hand
+
+  toggleRaise() {
+    if (this.raised) return this.lower();
+    const id = this.inventory.selectedId;
+    if (!id || !isToolRef(id)) return this.bus.toast('Take a tool from the Hall shelf, then press R', 'info');
+    this.raise(appIdOfTool(id));
+  }
+
+  raise(appId: string) {
+    const app = this.apps.get(appId);
+    const ctx = this.apps.context(appId);
+    if (!app?.tool || !ctx) return;
+    this.lower();
+    const instance = app.tool.create(ctx);
+    this.handGroup.add(instance.object);
+    this.raised = { appId, instance };
+    ui.set({ raised: app.tool.name });
+  }
+
+  lower() {
+    if (!this.raised) return;
+    this.handGroup.remove(this.raised.instance.object);
+    this.raised.instance.dispose();
+    this.raised = null;
+    ui.set({ raised: null });
+  }
+
+  /** A tap that lands on the raised tool presses whatever part it hit. Returns true when the tool used it. */
+  private pressTool(ndcX: number, ndcY: number): boolean {
+    const r = this.raised;
+    if (!r?.instance.pick) return false;
+    this.world.camera.updateMatrixWorld(true);
+    this.handGroup.updateMatrixWorld(true);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.world.camera);
+    const part = r.instance.pick(ray);
+    if (!part) return false;
+    r.instance.onPress?.(part);
+    return true;
+  }
+
+  private placeHand() {
+    const cam = this.world.camera;
+    this.handGroup.position.copy(cam.position).add(new THREE.Vector3(0.17, -0.16, -0.42).applyQuaternion(cam.quaternion));
+    this.handGroup.quaternion.copy(cam.quaternion);
+    this.handGroup.visible = this.raised !== null;
+  }
+
+  private activateObject(appId: string, objectId: string) {
+    const app = this.apps.get(appId);
+    const ctx = this.apps.context(appId);
+    if (app?.room?.onActivate && ctx) void app.room.onActivate(ctx, objectId);
   }
 
   get camera(): THREE.PerspectiveCamera {

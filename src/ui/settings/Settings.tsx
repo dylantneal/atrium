@@ -15,7 +15,7 @@ export async function applyQuality(session: Session, choice: QualityChoice, pers
 }
 
 /** The control room: quality, performance overlay, demo reset, replay the welcome tour. */
-export function Settings({ session, onReplay }: { session: Session; onReplay: () => void }) {
+export function Settings({ session }: { session: Session }) {
   const { settings } = useUi();
   const [q, setQ] = useState<QualityChoice>(() => (session.world.autoTier ? 'auto' : session.world.currentTier));
   const [confirm, setConfirm] = useState(false);
@@ -44,7 +44,7 @@ export function Settings({ session, onReplay }: { session: Session; onReplay: ()
         ))}
       </fieldset>
       <button onClick={() => ui.set({ perf: !ui.get().perf })}>Toggle performance overlay (`)</button>
-      <button onClick={onReplay}>Replay the welcome tour</button>
+      <button onClick={() => ui.set({ settings: false, replay: ui.get().replay + 1 })}>Replay the welcome tour</button>
       {session.demo &&
         (confirm ? (
           <div class="confirm" role="alertdialog">

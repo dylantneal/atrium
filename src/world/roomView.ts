@@ -10,20 +10,8 @@ import type { ThumbService } from './thumbs';
 import type { VFS } from '../vfs/vfs';
 import { hex } from './tiles';
 
-export interface DoorInfo {
-  name: string;
-  /** Item count in the target, when known. */
-  count?: number;
-  isParent: boolean;
-  /** Activity of the room behind the door (0..1) and how long it has sat untouched. */
-  activity?: number;
-  idleDays?: number;
-}
-
-export type Pick =
-  | { type: 'item'; itemId: Id; side: Side; slot: number; distance: number }
-  | { type: 'door'; door: Door; distance: number }
-  | { type: 'slot'; side: Side; slot: number; distance: number };
+export type { DoorInfo, Pick } from './roomLike';
+import type { DoorInfo, Pick, RoomLike, Spawn } from './roomLike';
 
 export interface RoomViewDeps {
   room: Room;
@@ -69,7 +57,7 @@ function labelTexture(draw: (ctx: CanvasRenderingContext2D, w: number, h: number
 }
 
 /** Everything for one room: geometry, lights, pictures, picking and collision. Disposable. */
-export class RoomView {
+export class RoomView implements RoomLike {
   readonly group = new THREE.Group();
   readonly room: Room;
   readonly size;
@@ -97,7 +85,7 @@ export class RoomView {
   private disposables: { dispose(): void }[] = [];
   private activity = 0.5;
 
-  constructor(private deps: RoomViewDeps) {
+  constructor(readonly deps: RoomViewDeps) {
     this.room = deps.room;
     this.size = sizeOf(deps.room.style);
     this.height = deps.room.style.height;
@@ -792,7 +780,7 @@ export class RoomView {
   // ---------------------------------------------------------------- queries
 
   /** Where to stand on arrival. `from` is the room we came through (if any). */
-  spawn(from: Id | null): { x: number; z: number; yaw: number } {
+  spawn(from: Id | null): Spawn {
     const door = from ? this.room.doors.find((d) => d.to === from) : undefined;
     const d0 = door ?? this.room.doors.find((d) => d.side === 'S');
     if (d0) {
@@ -804,7 +792,7 @@ export class RoomView {
   }
 
   /** A spot `dist` metres in front of a door, facing it. */
-  spawnBefore(door: Door, dist: number): { x: number; z: number; yaw: number } {
+  spawnBefore(door: Door, dist: number): Spawn {
     const f = wallPoint(this.size, door.side, door.t * wallLength(this.size, door.side), 0, dist);
     return { x: f.pos.x, z: f.pos.z, yaw: Math.atan2(f.nx, f.nz) };
   }

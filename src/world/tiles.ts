@@ -5,7 +5,7 @@ import { makeRng } from './generator/prng';
 type Ctx = CanvasRenderingContext2D;
 
 const KIND_COLOR: Record<NodeKind, string> = {
-  folder: '#c79a4b', image: '#4a6fa5', video: '#6a4a8f', audio: '#2f7f6f', text: '#8a8f99', markdown: '#c9b88a', pdf: '#b5524a', model3d: '#5a8f4a', other: '#6a6f78',
+  folder: '#c79a4b', image: '#4a6fa5', video: '#6a4a8f', audio: '#2f7f6f', text: '#8a8f99', markdown: '#c9b88a', pdf: '#b5524a', model3d: '#5a8f4a', link: '#3d7fbf', tool: '#c79a4b', other: '#6a6f78',
 };
 
 export const hex = (n: number) => '#' + n.toString(16).padStart(6, '0');
@@ -112,5 +112,21 @@ export function paintFolder(ctx: Ctx, w: number, h: number, name: string) {
   ctx.roundRect(60, 38, 136, 80, 8);
   ctx.fill();
   ctx.fillRect(60, 30, 56, 14);
+  caption(ctx, w, h, name);
+}
+
+/** A tool on the Hall shelf: big glyph on brass, name underneath. */
+export function paintTool(ctx: Ctx, w: number, h: number, name: string, icon: string) {
+  const g = ctx.createLinearGradient(0, 0, w, h);
+  g.addColorStop(0, '#6b4f1e');
+  g.addColorStop(1, '#c79a4b');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = '700 64px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(icon, w / 2, h / 2 - 14);
+  ctx.textAlign = 'left';
   caption(ctx, w, h, name);
 }

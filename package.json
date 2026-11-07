@@ -10,7 +10,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "perf": "node scripts/flythrough.mjs"
+    "perf": "node scripts/flythrough.mjs",
+    "shell:install": "cd shell && npm ci && node node_modules/electron/install.js",
+    "shell:build": "cd shell && npm run build",
+    "shell:test": "npm run build && cd shell && npm run build && xvfb-run -a npx playwright test -c playwright.config.ts",
+    "shell:start": "npm run build && cd shell && npm start"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

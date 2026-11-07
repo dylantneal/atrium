@@ -22,6 +22,8 @@ export class FocusController {
     readonly bus: ActionBus,
   ) {
     session.onItemActivate = (id) => void this.open(id);
+    session.openSurfaceHook = (appId, props) => this.openSurface(appId, props);
+    session.closeSurfaceHook = () => this.close();
   }
 
   get isOpen() {
@@ -40,7 +42,7 @@ export class FocusController {
 
   async open(id: Id) {
     if (this.busy) return;
-    if (this.isOpen) return this.show(id);
+    if (this.isOpen) return ui.get().focus?.id.startsWith('surface:') ? undefined : this.show(id);
     this.busy = true;
     try {
       const s = this.session;
@@ -59,6 +61,26 @@ export class FocusController {
     }
   }
 
+  /** Show an app's flat surface full screen (a form, an editor). Typing always happens here, never on 3D keys. */
+  async openSurface(appId: string, props?: unknown) {
+    if (this.busy) return;
+    if (!this.session.apps.get(appId)?.surface) throw new Error(`App "${appId}" has no surface`);
+    if (this.isOpen) await this.close();
+    this.busy = true;
+    try {
+      const s = this.session;
+      s.input.reset();
+      s.input.enabled = false;
+      this.saved = s.playerPose();
+      s.paused = true;
+      ui.set({ focus: { id: `surface:${appId}` }, surface: { appId, props }, aim: null });
+      s.world.setPaused(true);
+      s.events.emit('focus');
+    } finally {
+      this.busy = false;
+    }
+  }
+
   /** Switch the open viewer to another item without leaving focus mode. */
   async show(id: Id) {
     await this.flush();
@@ -68,6 +90,7 @@ export class FocusController {
 
   async step(dir: 1 | -1) {
     const cur = ui.get().focus?.id;
+    if (cur?.startsWith('surface:')) return;
     const order = this.session.view?.itemOrder() ?? [];
     if (!cur || order.length === 0) return;
     const i = order.indexOf(cur);
@@ -81,7 +104,7 @@ export class FocusController {
     try {
       await this.flush();
       const s = this.session;
-      ui.set({ focus: null });
+      ui.set({ focus: null, surface: null });
       s.world.setPaused(false);
       if (this.saved && !reduced()) await s.flyTo(this.saved.pos, this.saved.quat, 250);
       s.paused = false;

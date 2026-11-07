@@ -20,8 +20,8 @@ const STEPS: Step[] = [
 ];
 
 /** A short guided first run: a checklist that ticks itself off as you do each thing. Skippable, replayable. */
-export function Onboarding({ session, replay }: { session: Session; replay: number }) {
-  const { entered, focus, launcher } = useUi();
+export function Onboarding({ session }: { session: Session }) {
+  const { entered, focus, launcher, replay } = useUi();
   const [done, setDone] = useState<Set<GameEvent>>(new Set());
   const [hidden, setHidden] = useState(true);
   const [collapsed, setCollapsed] = useState(false);

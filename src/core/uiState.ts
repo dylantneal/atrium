@@ -2,7 +2,7 @@ import type { Id } from '../data/schema';
 import { createStore } from './store';
 
 export interface Aim {
-  kind: 'item' | 'door' | 'slot';
+  kind: 'item' | 'door' | 'slot' | 'object';
   id: Id;
   name: string;
   detail: string;
@@ -26,9 +26,13 @@ export interface UiState {
   launcher: { open: boolean; query: string };
   docent: boolean;
   settings: boolean;
+  raised: string | null;
+  /** Bumped to replay the welcome tour. */
+  replay: number;
+  surface: { appId: string; props?: unknown } | null;
   perf: boolean;
   caption: string | null;
   searchBanner: { query: string; kept: boolean } | null;
 }
 
-export const ui = createStore<UiState>({ entered: false, fade: false, crumbs: [], aim: null, roomTitle: '', listView: false, focus: null, ashes: false, launcher: { open: false, query: '' }, docent: false, settings: false, perf: new URLSearchParams(location.search).has('perf'), caption: null, searchBanner: null });
+export const ui = createStore<UiState>({ entered: false, fade: false, crumbs: [], aim: null, roomTitle: '', listView: false, focus: null, ashes: false, launcher: { open: false, query: '' }, docent: false, settings: false, raised: null, replay: 0, surface: null, perf: new URLSearchParams(location.search).has('perf'), caption: null, searchBanner: null });

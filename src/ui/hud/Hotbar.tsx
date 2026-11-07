@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { restoreCmd } from '../../core/handCommands';
 import { ui } from '../../core/uiState';
 import type { Id, Node } from '../../data/schema';
-import { hex, paintGeneric, paintImage, paintPlaceholder } from '../../world/tiles';
+import { HALL_ID, isToolRef } from '../../apps/api';
+import { paintGeneric, paintImage, paintPlaceholder, paintTool } from '../../world/tiles';
 import type { Session } from '../../world/session';
 import { useStore } from './useStore';
 import { useUi } from './App';
@@ -10,7 +11,9 @@ import { useUi } from './App';
 function Thumb({ session, id }: { session: Session; id: Id }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const [node, setNode] = useState<Node | null>(null);
+  const toolApp = isToolRef(id) ? session.apps.toolApp(id) : undefined;
   useEffect(() => {
+    if (toolApp) return; // tools have no file behind them
     let alive = true;
     session.vfs.stat(id).then((n) => alive && setNode(n)).catch(() => {});
     return () => {
@@ -19,6 +22,14 @@ function Thumb({ session, id }: { session: Session; id: Id }) {
   }, [id]);
   useEffect(() => {
     const c = ref.current;
+    if (c && toolApp) {
+      const g = c.getContext('2d')!;
+      g.save();
+      g.scale(c.width / 256, c.height / 160);
+      paintTool(g, 256, 160, toolApp.tool?.name ?? toolApp.name, toolApp.icon);
+      g.restore();
+      return;
+    }
     if (!c || !node) return;
     const ctx = c.getContext('2d')!;
     const draw = (fn: (g: CanvasRenderingContext2D) => void) => {
@@ -37,12 +48,14 @@ function Thumb({ session, id }: { session: Session; id: Id }) {
       alive = false;
     };
   }, [node?.id, node?.name]);
-  return <canvas ref={ref} width={96} height={60} aria-label={node?.name ?? 'item'} title={node?.name} />;
+  return <canvas ref={ref} width={96} height={60} aria-label={toolApp?.name ?? node?.name ?? 'item'} title={toolApp?.name ?? node?.name} />;
 }
 
 export function Hotbar({ session }: { session: Session }) {
   const inv = useStore(session.inventory.store);
-  const { entered, focus } = useUi();
+  const { entered, focus, raised } = useUi();
+  const selectedId = inv.slots[inv.selected];
+  const selectedTool = !!selectedId && isToolRef(selectedId);
   if (!entered || focus) return null;
   return (
     <div class="hotbar" role="toolbar" aria-label="Hands and shortcuts" data-testid="hotbar">
@@ -63,6 +76,10 @@ export function Hotbar({ session }: { session: Session }) {
       </div>
       <div class="pins">
         <button title="Go to Home" aria-label="Go to Home" onClick={() => void session.enter(session.vfs.rootId, session.currentId, false)}>⌂</button>
+        <button title="The Hall: apps and tools (A)" aria-label="Open the Hall" data-testid="open-hall" onClick={() => void session.enter(HALL_ID, session.currentId, false)}>▦</button>
+        {selectedTool && (
+          <button title="Raise or lower the tool (R)" aria-label="Raise tool" aria-pressed={!!raised} class={raised ? 'on' : ''} data-testid="raise-tool" onClick={() => session.toggleRaise()}>✋</button>
+        )}
         <button title="Put the selected item back (Q)" aria-label="Put back" disabled={!inv.slots[inv.selected]} onClick={() => session.putBack()}>↺</button>
         <button title="Copy instead of move" aria-label="Copy mode" aria-pressed={inv.copy} class={inv.copy ? 'on' : ''} onClick={() => session.inventory.toggleCopy()}>⧉</button>
         <button title="Trash" aria-label="Open trash" onClick={() => ui.set({ ashes: !ui.get().ashes })}>🗑</button>

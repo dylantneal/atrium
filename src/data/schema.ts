@@ -1,6 +1,6 @@
 export type Id = string;
 
-export type NodeKind = 'folder' | 'image' | 'video' | 'audio' | 'text' | 'markdown' | 'pdf' | 'model3d' | 'other';
+export type NodeKind = 'folder' | 'image' | 'video' | 'audio' | 'text' | 'markdown' | 'pdf' | 'model3d' | 'link' | 'tool' | 'other';
 
 export interface Pose {
   x: number;
@@ -79,7 +79,7 @@ export interface RoomContext {
   focusItem?: Id;
 }
 
-export type RoomKind = 'folder' | 'search' | 'saved-view';
+export type RoomKind = 'folder' | 'search' | 'saved-view' | 'app';
 
 export interface Room {
   id: Id;

@@ -25,6 +25,23 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         if: github.ref == 'refs/heads/main'
         with: { path: dist }
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - run: cd shell && npm ci
+      # the Electron binary download occasionally fails once; retry a few times
+      - run: |
+          cd shell
+          for i in 1 2 3; do node node_modules/electron/install.js && break || sleep 3; done
+          test -f node_modules/electron/path.txt
+      - run: cd shell && npm run build
+      - run: sudo apt-get update && sudo apt-get install -y xvfb libgbm1 libnss3 libasound2t64 libgtk-3-0t64
+      - run: cd shell && xvfb-run -a npx playwright test -c playwright.config.ts
   deploy:
     needs: test
     if: github.ref == 'refs/heads/main'

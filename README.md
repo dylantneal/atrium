@@ -28,6 +28,7 @@ The app starts on generated demo data (six projects, about 200 files). It has no
 | Docent | Rule-based, on-device. Sorts a wall by colour/name/date/size/kind, summarizes a room, suggests threads, tags items, gives a tour. Changes are previewed and applied only on confirmation. |
 | App platform | Apps plug in as tools you carry (hotbar, raise with `R`), rooms behind doors in the **Hall** (`A`), flat surfaces, panels and launcher commands. The docent, settings and trash are registered through it. |
 | Desktop shell | `shell/`: an Electron app that serves the built web app from a private origin under a strict CSP, with a narrow `window.atriumShell` bridge. Real folders and real web pages as 3D textures come next. |
+| Weather and sky | The unused door bays are windows onto a live sky: sun and moon in the right window for the time, stars, clouds, rain, snow, fog. Room light and a wall clock follow the real time. The Weather Deck (in the Hall) shows the forecast as a table; details, location and units are in its flat view. Weather is Open-Meteo (keyless); with no location set it runs a simulated demo sky. Launcher: `Sky: jump to sunset`, `Sky: show rain weather`. URL flags: `?now=<ISO time>`, `?weather=rain`, `?timescale=600`. |
 | Also | Welcome tour, quality tiers with auto step-down, accessible list view (`L`), settings (control room). |
 
 ### Controls
@@ -47,8 +48,8 @@ The app starts on generated demo data (six projects, about 200 files). It has no
 
 ```bash
 npm run typecheck
-npm test           # 81 unit, property and contract tests (Vitest)
-npm run e2e        # 24 browser tests (Playwright). Set PW_CHROMIUM=/path/to/chromium to reuse an installed browser.
+npm test           # 126 unit, property and contract tests (Vitest)
+npm run e2e        # 30 browser tests (Playwright). Set PW_CHROMIUM=/path/to/chromium to reuse an installed browser.
 npm run shell:test # the Electron shell under Xvfb (run `npm run shell:install` once)
 npm run perf       # scripted flythrough with 4x CPU throttle (software GL: relative numbers only)
 ```

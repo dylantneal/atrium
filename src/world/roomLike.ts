@@ -1,5 +1,6 @@
 import type * as THREE from 'three';
 import type { Door, Id, Room, Side } from '../data/schema';
+import type { AmbientSnapshot } from '../apps/ambient/ambient';
 import type { ItemInfo } from './itemTiles';
 
 export interface DoorInfo {
@@ -45,6 +46,8 @@ export interface RoomLike {
   setHeld(held: Set<Id>): void;
   setCarrying(on: boolean, held: Set<Id>): void;
   setActivityTarget(a: number): void;
+  /** The sky and clock changed: windows, daylight and the wall clock follow. */
+  setAmbient(a: AmbientSnapshot): void;
   setDoorState(doorId: string, info: DoorInfo): void;
   doorBrightness(doorId: string): number | null;
   itemOrder(): Id[];

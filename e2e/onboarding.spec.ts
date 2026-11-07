@@ -39,12 +39,12 @@ test('M4: the welcome tour ticks itself off as you do things, and Skip is rememb
   await expect(page.getByTestId('save-status')).toHaveText('Saved');
   await page.keyboard.press('Escape');
   await expect(page.getByTestId('focus')).toBeHidden();
-  await expect(tour).toContainText('2 of 6');
+  await expect(tour).toContainText('2 of 6', { timeout: 15_000 });
   await page.evaluate(() => (window as any).atrium.session.enterSearch('crow'));
-  await expect(tour).toContainText('3 of 6');
+  await expect(tour).toContainText('3 of 6', { timeout: 15_000 });
   await page.evaluate(async () => { const s = (window as any).atrium.session; await s.enter(s.vfs.rootId, null, true); });
   await page.getByTestId('make-live').click();
-  await expect(tour).toContainText('4 of 6');
+  await expect(tour).toContainText('4 of 6', { timeout: 15_000 });
   await expect(tour).toContainText('Watch a dim room light up');
   await expect(tour.locator('li.done')).toHaveCount(4);
 

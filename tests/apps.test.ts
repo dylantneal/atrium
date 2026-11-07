@@ -4,7 +4,7 @@ import { makeAppRoom } from '../src/apps/appRoom';
 import { AppRegistry } from '../src/apps/registry';
 import { closeDb, getSetting, setDbName } from '../src/data/idb';
 
-const ctxBase = () => ({ vfs: {} as never, bus: {} as never, session: {} as never, notify: () => {} });
+const ctxBase = () => ({ vfs: {} as never, bus: {} as never, session: {} as never, ambient: {} as never, notify: () => {} });
 const app = (id: string, over: Partial<AtriumApp> = {}): AtriumApp => ({ id, name: id, icon: '◆', ...over });
 
 describe('app references', () => {

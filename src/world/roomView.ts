@@ -2,10 +2,12 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Door, Id, Room, Side, WallType } from '../data/schema';
 import { Atlas } from './atlas';
-import { DOOR_H, DOOR_W, freeSpans, gridFor, landmarkPos, SIDES, slotGeometry, slotPose, sizeOf, wallLength, wallPoint, type SlotGeom } from './generator/layout';
-import { LANDMARK_RADIUS, PALETTES } from './generator/rooms';
+import { bayCount, bayU, DOOR_H, DOOR_W, freeSpans, gridFor, landmarkPos, SIDES, slotGeometry, slotPose, sizeOf, wallLength, wallPoint, type SlotGeom } from './generator/layout';
+import { bayIndexOfDoor, LANDMARK_RADIUS, PALETTES } from './generator/rooms';
 import { dustLevel, glowLevel, hasCobwebs, isNeglected, kelvinToRgb, roomLight, wear } from '../core/rules/appearance';
+import type { AmbientSnapshot } from '../apps/ambient/ambient';
 import { fillTile, type ItemInfo } from './itemTiles';
+import { applySky, createSkyMaterial, type SkyUniformsView } from './skyMaterial';
 import type { ThumbService } from './thumbs';
 import type { VFS } from '../vfs/vfs';
 import { hex } from './tiles';
@@ -76,6 +78,15 @@ export class RoomView implements RoomLike {
   private doorMats = new Map<string, { mat: THREE.MeshBasicMaterial; cur: number; target: number }>();
   private doorLabels = new Map<string, { tex: THREE.CanvasTexture; draw: (info: DoorInfo) => void }>();
   private cobwebs = 0;
+  private skyMats = new Map<Side, THREE.ShaderMaterial>();
+  private windowCount = 0;
+  private dayMul = 1;
+  /** 0 by day, up to 1 at night in a room with windows: cools the ambient light. */
+  private nightMix = 0;
+  private skyTime = 0;
+  private clockCtx: { ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture; minute: number } | null = null;
+  private lastSky: Partial<Record<Side, SkyUniformsView>> = {};
+  private ambientSnap: AmbientSnapshot | null = null;
   private curActivity = 0.5;
   private targetActivity = 0.5;
   private glowMesh: THREE.InstancedMesh | null = null;
@@ -106,6 +117,7 @@ export class RoomView implements RoomLike {
 
     this.buildShell(pal);
     this.buildDoors(pal);
+    this.buildWindows(pal);
     this.buildWallFurniture(wanted, pal);
     this.buildLandmarks(pal);
     this.buildLights(pal);
@@ -629,11 +641,12 @@ export class RoomView implements RoomLike {
     // temporary search rooms use neutral workshop light so they never read as a real (warm) folder room
     const [r, g, b] = kelvinToRgb(this.room.kind === 'search' ? 5600 : light.kelvin);
     for (const l of this.lights) {
-      l.intensity = (2 + 17 * intensity) / Math.max(1, this.lights.length * 0.55);
+      l.intensity = ((2 + 17 * intensity) / Math.max(1, this.lights.length * 0.55)) * (0.55 + 0.45 * this.dayMul);
       l.color.setRGB(r, g, b);
     }
-    this.hemi.intensity = 0.14 + 0.42 * intensity;
-    this.picMat.color.setScalar(0.42 + 0.58 * intensity);
+    this.hemi.intensity = (0.14 + 0.42 * intensity) * this.dayMul;
+    this.hemi.color.set(PALETTES[this.room.style.palette].ceil).lerp(new THREE.Color(0x30427a), this.nightMix * 0.7);
+    this.picMat.color.setScalar((0.42 + 0.58 * intensity) * (0.72 + 0.28 * this.dayMul));
   }
 
   /** Animate towards a new activity (1.5 s) instead of snapping, so a change is visible happening. */
@@ -657,6 +670,10 @@ export class RoomView implements RoomLike {
 
   /** Called every frame: eases light and door brightness. */
   tick(dt: number) {
+    if (this.skyMats.size) {
+      this.skyTime += dt;
+      for (const m of this.skyMats.values()) m.uniforms.uTime.value = this.skyTime;
+    }
     const k = Math.min(1, dt / 1.5 * 3);
     if (Math.abs(this.curActivity - this.targetActivity) > 0.002) this.setActivity(this.curActivity + (this.targetActivity - this.curActivity) * k);
     for (const d of this.doorMats.values()) {
@@ -665,6 +682,124 @@ export class RoomView implements RoomLike {
         d.mat.color.setScalar(d.cur);
       }
     }
+  }
+
+  // ---------------------------------------------------------------- windows, sky and the wall clock
+
+  /** Every door bay that has no door becomes a window onto the sky (and a clock hangs above the first one). */
+  private buildWindows(pal: (typeof PALETTES)[number]) {
+    const used = new Set(this.room.doors.map((d) => `${d.side}:${bayIndexOfDoor(d, this.size)}`));
+    const bySide = new Map<Side, number[]>();
+    for (const side of SIDES) {
+      const L = wallLength(this.size, side);
+      for (let i = 0; i < bayCount(L); i++) {
+        if (used.has(`${side}:${i}`)) continue;
+        bySide.set(side, [...(bySide.get(side) ?? []), bayU(L, i)]);
+      }
+    }
+    const frame: THREE.BufferGeometry[] = [];
+    const W = 1.5;
+    const y0 = 0.85;
+    const y1 = 2.35;
+    let firstWindow: { side: Side; u: number } | null = null;
+    for (const [side, us] of bySide) {
+      const panes: THREE.BufferGeometry[] = [];
+      for (const u of us) {
+        panes.push(this.planeAt(side, u - W / 2, u + W / 2, y0, y1, 0.012));
+        const t = 0.07;
+        frame.push(this.boxAt(side, u, y0 - t / 2, W + 2 * t, t, 0.09, 0));
+        frame.push(this.boxAt(side, u, y1 + t / 2, W + 2 * t, t, 0.09, 0));
+        frame.push(this.boxAt(side, u - W / 2 - t / 2, (y0 + y1) / 2, t, y1 - y0, 0.09, 0));
+        frame.push(this.boxAt(side, u + W / 2 + t / 2, (y0 + y1) / 2, t, y1 - y0, 0.09, 0));
+        frame.push(this.boxAt(side, u, (y0 + y1) / 2, 0.04, y1 - y0, 0.07, 0.005));
+        frame.push(this.boxAt(side, u, y0 - t - 0.025, W + 0.3, 0.05, 0.2, 0)); // sill
+        this.windowCount++;
+        firstWindow ??= { side, u };
+      }
+      const mat = createSkyMaterial();
+      this.skyMats.set(side, mat);
+      const geo = panes.length === 1 ? panes[0] : mergeGeometries(panes, false)!;
+      if (panes.length > 1) for (const g of panes) g.dispose();
+      const m = new THREE.Mesh(geo, mat);
+      this.group.add(m);
+      this.disposables.push(geo, mat);
+    }
+    this.mesh(frame, lambert(pal.trim));
+    if (firstWindow && this.height >= 2.95) this.buildClock(firstWindow.side, firstWindow.u);
+  }
+
+  private buildClock(side: Side, u: number) {
+    const size = 128;
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+    const geo = new THREE.CircleGeometry(0.17, 40);
+    const m = new THREE.Mesh(geo, mat);
+    const f = wallPoint(this.size, side, u, Math.min(2.72, this.height - 0.2), 0.03);
+    m.position.set(f.pos.x, f.pos.y, f.pos.z);
+    m.rotation.y = f.ry;
+    this.group.add(m);
+    this.disposables.push(geo, mat, tex);
+    this.clockCtx = { ctx: c.getContext('2d')!, tex, minute: -1 };
+  }
+
+  private drawClock(now: number) {
+    const k = this.clockCtx;
+    if (!k) return;
+    const minute = Math.floor(now / 60000);
+    if (minute === k.minute) return;
+    k.minute = minute;
+    const g = k.ctx;
+    const s = 128;
+    const t = new Date(now);
+    const h = t.getHours() % 12;
+    const m = t.getMinutes();
+    g.clearRect(0, 0, s, s);
+    g.fillStyle = '#f5efe2';
+    g.beginPath();
+    g.arc(s / 2, s / 2, s / 2 - 2, 0, Math.PI * 2);
+    g.fill();
+    g.strokeStyle = '#2a2218';
+    g.lineWidth = 6;
+    g.stroke();
+    g.lineWidth = 3;
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      g.beginPath();
+      g.moveTo(s / 2 + Math.sin(a) * 48, s / 2 - Math.cos(a) * 48);
+      g.lineTo(s / 2 + Math.sin(a) * 56, s / 2 - Math.cos(a) * 56);
+      g.stroke();
+    }
+    const hand = (angle: number, len: number, w: number) => {
+      g.lineWidth = w;
+      g.lineCap = 'round';
+      g.beginPath();
+      g.moveTo(s / 2, s / 2);
+      g.lineTo(s / 2 + Math.sin(angle) * len, s / 2 - Math.cos(angle) * len);
+      g.stroke();
+    };
+    hand(((h + m / 60) / 12) * Math.PI * 2, 30, 6);
+    hand((m / 60) * Math.PI * 2, 46, 4);
+    k.tex.needsUpdate = true;
+  }
+
+  /** The sky, the clock and the amount of daylight indoors follow the environment. */
+  setAmbient(a: AmbientSnapshot) {
+    this.ambientSnap = a;
+    for (const [side, mat] of this.skyMats) this.lastSky[side] = applySky(mat, a, side);
+    // rooms with windows get daylight; the more windows, the more of it. Indoor lamps stay on, so night is moody, not black.
+    const open = this.windowCount === 0 ? 0 : Math.min(1, 0.5 + 0.25 * this.windowCount);
+    this.dayMul = 1 - 0.5 * (1 - a.daylight) * open;
+    this.nightMix = (1 - a.daylight) * open;
+    this.setActivity(this.curActivity);
+    this.drawClock(a.now);
+  }
+
+  /** What the windows, clock and light are doing right now (read by tests and the perf overlay). */
+  ambientInfo() {
+    return { windows: this.windowCount, dayMul: this.dayMul, sky: this.lastSky, clockMinute: this.clockCtx?.minute ?? null, hasClock: !!this.clockCtx };
   }
 
   // ---------------------------------------------------------------- wear: dust, glow, cobwebs

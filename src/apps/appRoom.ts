@@ -48,6 +48,7 @@ export function makeAppRoom(d: AppRoomData): Room {
 export class AppRoom extends RoomView {
   private objects: THREE.Object3D[] = [];
   private objRay = new THREE.Raycaster();
+  private disposers: (() => void)[] = [];
   /** Called every frame, after the base room has updated. */
   onTick: ((dt: number) => void) | null = null;
 
@@ -61,6 +62,11 @@ export class AppRoom extends RoomView {
     this.group.add(obj);
     this.objects.push(obj);
     return obj;
+  }
+
+  /** Run when the room is torn down (unsubscribe from services here). */
+  addDisposer(fn: () => void) {
+    this.disposers.push(fn);
   }
 
   /** Plain, unpickable decoration (still disposed with the room). */
@@ -90,6 +96,8 @@ export class AppRoom extends RoomView {
   }
 
   override dispose() {
+    for (const d of this.disposers) d();
+    this.disposers = [];
     for (const o of this.objects) {
       o.traverse((n) => {
         const m = n as THREE.Mesh;

@@ -1,0 +1,14 @@
+import { chromium } from '@playwright/test';
+const browser = await chromium.launch({ executablePath: process.env.PW_CHROMIUM, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+await page.goto('http://localhost:4173/?tour=off&now=2026-06-21T22:30:00Z&weather=rain&db=deck-' + Date.now());
+await page.getByRole('button', { name: 'Enter' }).click();
+await page.waitForFunction(() => window.atrium?.session?.view);
+await page.evaluate(async () => { const s = window.atrium.session; await s.enter('app:weather', 'app:hall', false); await s.view.whenSettled(); s.player.yaw = 0.35; s.player.pitch = -0.08; s.world.renderOnce(); });
+await page.waitForTimeout(900);
+await page.evaluate(() => window.atrium.world.renderOnce());
+await page.screenshot({ path: 'test-results/deck.png' });
+await page.evaluate(() => window.atrium.apps.context('weather').session.openSurface('weather'));
+await page.waitForTimeout(400);
+await page.screenshot({ path: 'test-results/weather-surface.png' });
+await browser.close();

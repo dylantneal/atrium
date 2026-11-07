@@ -7,6 +7,7 @@ import type { VFS } from '../vfs/vfs';
 import type { RoomLike } from '../world/roomLike';
 import type { ThumbService } from '../world/thumbs';
 import type { DoorInfo } from '../world/roomLike';
+import type { AmbientService } from './ambient/ambient';
 import type { Door } from '../data/schema';
 
 /**
@@ -39,6 +40,8 @@ export interface AppContext {
   readonly vfs: VFS;
   readonly bus: ActionBus;
   readonly session: SessionFacade;
+  /** The environment: time, sun, weather. Read it, or subscribe through `ambient.store`. */
+  readonly ambient: AmbientService;
   /** Per-app key/value store, namespaced by app id and persisted. */
   readonly settings: {
     get<T>(key: string): Promise<T | undefined>;

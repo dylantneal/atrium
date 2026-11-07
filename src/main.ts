@@ -30,6 +30,10 @@ async function boot() {
   focus = new FocusController(session, vfs, bus);
   docent = new DocentService(session);
   await registerBuiltins(session.apps, session, docent);
+  // ?weather=clear|partly|cloud|fog|rain|storm|snow pins the sky; ?now=<ISO time> sets the clock; ?timescale=N runs time faster (all for demos and tests)
+  if (params.has('weather')) session.ambient.force(params.get('weather'));
+  if (params.has('now')) session.ambient.setNow(Date.parse(params.get('now')!));
+  if (params.has('timescale')) session.ambient.setTimeScale(Number(params.get('timescale')));
   world.start();
   await session.start();
   // quality: ?tier=low|medium|high|auto, else the saved choice, else auto
@@ -38,16 +42,14 @@ async function boot() {
   world.setTier(savedQuality === 'auto' ? 'high' : savedQuality);
   world.onTierChange = (t) => bus.toast(`Lowered graphics quality to ${t} to keep things smooth. Change it in settings.`);
 
-  let audio: AudioContext | null = null;
   handles.onEnter(() => {
-    audio ??= new AudioContext();
-    void audio.resume();
+    session!.audio.unlock(); // browsers allow sound only after a gesture: this runs from the Enter click
     ui.set({ entered: true });
     canvas.focus();
   });
 
   // Debug/test handle, used by Playwright.
-  (window as unknown as { atrium: unknown }).atrium = { world, bus, vfs, session, ui, focus, docent, apps: session.apps, three: THREE, kit: { AppRoom, makeAppRoom, h }, flush: async () => { await session!.inventory.flush(); await flushWrites(); } };
+  (window as unknown as { atrium: unknown }).atrium = { world, bus, vfs, session, ui, focus, docent, apps: session.apps, ambient: session.ambient, audio: session.audio, three: THREE, kit: { AppRoom, makeAppRoom, h }, flush: async () => { await session!.inventory.flush(); await flushWrites(); } };
 }
 
 void boot();

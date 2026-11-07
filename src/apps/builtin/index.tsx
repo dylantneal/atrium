@@ -6,6 +6,7 @@ import { Settings } from '../../ui/settings/Settings';
 import type { Session } from '../../world/session';
 import type { AtriumApp } from '../api';
 import type { AppRegistry } from '../registry';
+import { weatherApp } from '../weather';
 
 /**
  * Atrium's own panels, registered through the same interface any app uses (docent, settings, trash).
@@ -13,6 +14,7 @@ import type { AppRegistry } from '../registry';
  */
 export function builtinApps(session: Session, docent: DocentService): AtriumApp[] {
   return [
+    weatherApp(),
     {
       id: 'docent',
       name: 'Docent',

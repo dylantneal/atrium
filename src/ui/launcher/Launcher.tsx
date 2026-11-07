@@ -31,37 +31,43 @@ export function Launcher({ ctl, extra }: { ctl: FocusController; extra: Launcher
     if (launcher.open) setTimeout(() => input.current?.focus(), 0);
   }, [launcher.open]);
 
+  /** Rows for a query. Used by the debounced effect and by Enter (which must not act on rows for an older query). */
+  const compute = async (query: string): Promise<{ rows: Row[]; total: number }> => {
+    const text = query.trim();
+    if (text === '' || text.startsWith('>')) {
+      const f = text.replace(/^>\s*/, '').toLowerCase();
+      const list = commands.filter((c) => c.title.toLowerCase().includes(f));
+      return { rows: list.map((c) => ({ type: 'command', id: c.id, title: c.title, sub: c.hint ?? 'command', cmd: c }) as Row), total: 0 };
+    }
+    const hits = await s.search.query(text, 60);
+    const nodes: (Node | null)[] = await Promise.all(hits.slice(0, 8).map((h) => s.vfs.stat(h.id).catch(() => null)));
+    return {
+      rows: nodes
+        .filter((n): n is Node => !!n)
+        .map((n) => ({ kind: n.kind, type: n.kind === 'folder' ? 'folder' : 'file', id: n.id, title: n.name, sub: s.search.paths.get(n.id) || 'Home' }) as Row),
+      total: hits.length,
+    };
+  };
+
+  // which query the rows on screen belong to: Enter compares this with what is typed
+  const rowsFor = useRef<string | null>(null);
+
   useEffect(() => {
     if (!launcher.open) return;
     let alive = true;
     const t = setTimeout(async () => {
-      const text = q.trim();
-      if (text === '' || text.startsWith('>')) {
-        const f = text.replace(/^>\s*/, '').toLowerCase();
-        const list = commands.filter((c) => c.title.toLowerCase().includes(f));
-        if (alive) {
-          setRows(list.map((c) => ({ type: 'command', id: c.id, title: c.title, sub: c.hint ?? 'command', cmd: c })));
-          setTotal(0);
-          setSel(0);
-        }
-        return;
-      }
-      const hits = await s.search.query(text, 60);
-      const nodes: (Node | null)[] = await Promise.all(hits.slice(0, 8).map((h) => s.vfs.stat(h.id).catch(() => null)));
+      const r = await compute(q);
       if (!alive) return;
-      setTotal(hits.length);
-      setRows(
-        nodes
-          .filter((n): n is Node => !!n)
-          .map((n) => ({ kind: n.kind, type: n.kind === 'folder' ? 'folder' : 'file', id: n.id, title: n.name, sub: s.search.paths.get(n.id) || 'Home' })),
-      );
+      rowsFor.current = q;
+      setRows(r.rows);
+      setTotal(r.total);
       setSel(0);
     }, 60);
     return () => {
       alive = false;
       clearTimeout(t);
     };
-  }, [q, launcher.open, s.demo]);
+  }, [q, launcher.open, s.demo, extra.length]);
 
   if (!launcher.open) return null;
   const close = () => ui.set({ launcher: { open: false, query: '' } });
@@ -94,7 +100,15 @@ export function Launcher({ ctl, extra }: { ctl: FocusController; extra: Launcher
             else if (e.key === 'ArrowDown') (e.preventDefault(), setSel((i) => Math.min(rows.length - 1, i + 1)));
             else if (e.key === 'ArrowUp') (e.preventDefault(), setSel((i) => Math.max(0, i - 1)));
             else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.shiftKey) && q.trim() && !q.startsWith('>')) void asRoom();
-            else if (e.key === 'Enter' && rows[sel]) void activate(rows[sel]);
+            else if (e.key === 'Enter') {
+              e.preventDefault();
+              // rows are debounced: if they are for an older query, compute the right ones now instead of acting on stale rows
+              void (async () => {
+                const current = rowsFor.current === q ? rows : (await compute(q)).rows;
+                const pick = rowsFor.current === q ? current[sel] : current[0];
+                if (pick) await activate(pick);
+              })();
+            }
           }}
         />
         <ul role="listbox">

@@ -22,6 +22,8 @@ import { AppRegistry } from '../apps/registry';
 import { buildHall } from '../apps/hall';
 import { appIdOfTool, HALL_ID, isAppRoomId, isToolRef, roomIdOf, type SessionFacade, type ToolInstance } from '../apps/api';
 import { AppRoom, makeAppRoom } from '../apps/appRoom';
+import { AmbientService, OpenMeteoProvider } from '../apps/ambient/ambient';
+import { AudioService } from './audio';
 import type { World } from './scene';
 import { ThumbService } from './thumbs';
 
@@ -58,6 +60,9 @@ export class Session {
   readonly events = new Emitter<GameEvent>();
   readonly search: SearchService;
   readonly apps: AppRegistry;
+  /** Time, sun and weather. The demo sky works offline; a saved place switches to live Open-Meteo data. */
+  readonly ambient = new AmbientService({ provider: new OpenMeteoProvider() });
+  readonly audio = new AudioService();
   /** The tool currently raised in the player's hand, if any. */
   raised: { appId: string; instance: ToolInstance } | null = null;
   private handGroup = new THREE.Group();
@@ -106,8 +111,15 @@ export class Session {
       },
     };
     const self = this;
-    this.apps = new AppRegistry(() => ({ vfs, bus, session: facade, notify: (n) => bus.toast(n.body ? `${n.title}: ${n.body}` : n.title) }));
+    this.apps = new AppRegistry(() => ({ vfs, bus, session: facade, ambient: this.ambient, notify: (n) => bus.toast(n.body ? `${n.title}: ${n.body}` : n.title) }));
     world.handScene.add(this.handGroup);
+    // the sky follows the clock: windows, daylight, the wall clock and the sound of rain
+    this.ambient.store.subscribe((s) => this.applyAmbient(s));
+  }
+
+  private applyAmbient(s = this.ambient.store.get()) {
+    this.view?.setAmbient(this.ambient.snapshot(s));
+    this.audio.setRain(s.conditions.precip === 'rain' ? 0.25 + 0.75 * s.conditions.intensity : 0);
   }
 
   /** Hand commands run several changes as one: no rebuild until the whole batch is done. */
@@ -277,6 +289,9 @@ export class Session {
     this.demo = this.vfs.demo;
     await this.refreshActivity();
     void this.search.init();
+    await this.audio.load();
+    await this.ambient.load();
+    this.ambient.start();
     await this.inventory.load((id) => (isToolRef(id) ? Promise.resolve(this.apps.hasTool(id)) : this.vfs.stat(id).then(() => true, () => false)));
     const last = await getSetting<Id>('lastRoom');
     let target = this.vfs.rootId;
@@ -579,6 +594,7 @@ export class Session {
     this.currentId = room.id;
     this.view = view;
     this.world.root.add(view.group);
+    this.applyAmbient();
     this.syncHeld();
     this.world.sun.intensity = 0;
     this.world.ambient.intensity = 0;
